@@ -145,9 +145,13 @@ function InviteAcceptPage() {
         });
 
         if (confirmError) {
-          console.warn('Failed to auto-confirm user (may require email confirmation):', confirmError);
-          // If function doesn't exist (404), try using admin API directly via another approach
-          // For now, continue and try to sign in - if email confirmation is disabled, it should work
+          // 404 means function might not be deployed yet, or network issue
+          if (confirmError.message?.includes('404') || confirmError.message?.includes('not found')) {
+            console.warn('Auto-confirm function not available (404). Email confirmation may be required.');
+          } else {
+            console.warn('Failed to auto-confirm user:', confirmError);
+          }
+          // Continue anyway - if email confirmation is disabled in Supabase settings, sign-in will work
         } else if (confirmResult?.success) {
           console.log('User auto-confirmed successfully');
         }
