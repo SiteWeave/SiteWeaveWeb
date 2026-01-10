@@ -53,7 +53,7 @@ function InviteAcceptPage() {
         .select(`
           *,
           organizations (name),
-          roles (name)
+          roles!fk_invitations_role_id (name)
         `)
         .eq('invitation_token', token)
         .eq('status', 'pending')
