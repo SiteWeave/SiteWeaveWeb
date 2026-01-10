@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { supabaseClient } from '../context/AppContext';
-import { useToast } from '../context/ToastContext';
+import { supabase } from '../supabaseClient';
 import LoadingSpinner from './LoadingSpinner';
 
 /**
@@ -11,13 +10,13 @@ import LoadingSpinner from './LoadingSpinner';
 function InviteAcceptPage() {
   const { token } = useParams();
   const navigate = useNavigate();
-  const { addToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [invitation, setInvitation] = useState(null);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState(null);
+  const [message, setMessage] = useState(null);
 
   useEffect(() => {
     console.log('InviteAcceptPage mounted, token:', token);
@@ -42,7 +41,7 @@ function InviteAcceptPage() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabaseClient
+      const { data, error } = await supabase
         .from('invitations')
         .select(`
           *,
@@ -94,19 +93,19 @@ function InviteAcceptPage() {
     e.preventDefault();
     
     if (password !== confirmPassword) {
-      addToast('Passwords do not match', 'error');
+      setError('Passwords do not match');
       return;
     }
 
     if (password.length < 8) {
-      addToast('Password must be at least 8 characters', 'error');
+      setError('Password must be at least 8 characters');
       return;
     }
 
     setAccepting(true);
     try {
       // Step 1: Sign up the user
-      const { data: authData, error: signUpError } = await supabaseClient.auth.signUp({
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({
         email: invitation.email,
         password: password,
         options: {
@@ -118,10 +117,71 @@ function InviteAcceptPage() {
         }
       });
 
-      if (signUpError) throw signUpError;
+      if (signUpError) {
+        // If user already exists, they should sign in instead
+        if (signUpError.message.includes('already registered') || signUpError.message.includes('User already registered')) {
+          setError('An account with this email already exists. Please sign in to claim this invitation.');
+          return;
+        }
+        throw signUpError;
+      }
 
-      // Step 2: Update the invitation status
-      const { error: updateError } = await supabaseClient
+      if (!authData.user) {
+        throw new Error('User account creation failed');
+      }
+
+      // Wait a moment for profile to be created by Supabase trigger
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Step 2: Ensure contact exists and is linked to profile
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('contact_id')
+        .eq('id', authData.user.id)
+        .maybeSingle();
+
+      let contactId = profile?.contact_id;
+
+      if (!contactId) {
+        // Check if contact exists with this email in the organization
+        const { data: existingContact } = await supabase
+          .from('contacts')
+          .select('id')
+          .ilike('email', invitation.email)
+          .eq('organization_id', invitation.organization_id)
+          .maybeSingle();
+
+        if (existingContact) {
+          contactId = existingContact.id;
+        } else {
+          // Create new contact
+          const { data: newContact, error: contactError } = await supabase
+            .from('contacts')
+            .insert({
+              name: authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User',
+              email: invitation.email,
+              role: 'Team Member',
+              type: 'Team',
+              organization_id: invitation.organization_id,
+              status: 'Available',
+              created_by_user_id: authData.user.id
+            })
+            .select('id')
+            .single();
+
+          if (contactError) throw contactError;
+          contactId = newContact.id;
+        }
+
+        // Link contact to profile
+        await supabase
+          .from('profiles')
+          .update({ contact_id: contactId })
+          .eq('id', authData.user.id);
+      }
+
+      // Step 3: Update the invitation status
+      const { error: updateError } = await supabase
         .from('invitations')
         .update({
           status: 'accepted',
@@ -131,26 +191,27 @@ function InviteAcceptPage() {
 
       if (updateError) throw updateError;
 
-      // Step 3: Update the user's profile with organization and role
-      const { error: profileError } = await supabaseClient
+      // Step 4: Update the user's profile with organization and role
+      const { error: profileError } = await supabase
         .from('profiles')
         .update({
           organization_id: invitation.organization_id,
-          role_id: invitation.role_id
+          role_id: invitation.role_id,
+          status: 'active'
         })
         .eq('id', authData.user.id);
 
       if (profileError) throw profileError;
 
-      addToast(`Welcome to ${invitation.organizations.name}!`, 'success');
+      setMessage(`Welcome to ${invitation.organizations?.name || 'the organization'}!`);
       
-      // Step 4: Navigate to the main app
+      // Step 5: Navigate to the main app
       setTimeout(() => {
         navigate('/');
       }, 1500);
     } catch (error) {
       console.error('Error accepting invitation:', error);
-      addToast(`Failed to accept invitation: ${error.message}`, 'error');
+      setError(error.message || 'Failed to accept invitation. Please try again.');
     } finally {
       setAccepting(false);
     }
@@ -160,7 +221,24 @@ function InviteAcceptPage() {
     console.log('InviteAcceptPage: Loading state', { loading, hasToken: !!token });
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <LoadingSpinner />
+        <LoadingSpinner size="lg" text="Loading invitation..." />
+      </div>
+    );
+  }
+
+  if (message) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-6 sm:p-8 text-center">
+          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Success!</h2>
+          <p className="text-gray-600 mb-6">{message}</p>
+          <p className="text-sm text-gray-500">Redirecting...</p>
+        </div>
       </div>
     );
   }
@@ -216,16 +294,20 @@ function InviteAcceptPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-8">
         <div className="text-center mb-6">
-          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 19v-8.93a2 2 0 01.89-1.664l7-4.666a2 2 0 012.22 0l7 4.666A2 2 0 0121 10.07V19M3 19a2 2 0 002 2h14a2 2 0 002-2M3 19l6.75-4.5M21 19l-6.75-4.5M3 10l6.75 4.5M21 10l-6.75 4.5m0 0l-1.14.76a2 2 0 01-2.22 0l-1.14-.76" />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900">You're Invited!</h2>
-          <p className="text-gray-600 mt-2">
-            Join <strong>{invitation.organizations.name}</strong> as a <strong>{invitation.roles.name}</strong>
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Welcome to SiteWeave</h2>
+          <p className="text-sm sm:text-base text-gray-600">
+            Join <strong>{invitation.organizations?.name || 'the organization'}</strong>
+            {invitation.roles?.name && (
+              <> as a <strong>{invitation.roles.name}</strong></>
+            )}
           </p>
         </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-sm text-red-800">{error}</p>
+          </div>
+        )}
 
         <form onSubmit={handleAcceptInvitation} className="space-y-4">
           <div>
@@ -234,9 +316,9 @@ function InviteAcceptPage() {
             </label>
             <input
               type="email"
-              value={invitation.email}
+              value={invitation?.email || ''}
               disabled
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
+              className="w-full px-3 py-2 text-sm sm:text-base border border-gray-300 rounded-lg bg-gray-50 text-gray-600"
             />
           </div>
 
@@ -249,10 +331,11 @@ function InviteAcceptPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="At least 8 characters"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm sm:text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
               required
               minLength={8}
               disabled={accepting}
+              autoComplete="new-password"
             />
           </div>
 
@@ -265,38 +348,22 @@ function InviteAcceptPage() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Re-enter your password"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm sm:text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
               required
               minLength={8}
               disabled={accepting}
+              autoComplete="new-password"
             />
-          </div>
-
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-            <p className="text-sm text-blue-800">
-              <strong>The Power is Yours:</strong><br />
-              Your password, your security. Choose a strong one!
-            </p>
           </div>
 
           <button
             type="submit"
-            className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
+            className="w-full px-4 py-3 text-sm sm:text-base bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             disabled={accepting}
           >
-            {accepting ? 'Setting up your account...' : 'Join the Team'}
+            {accepting ? 'Setting up your account...' : 'Accept Invitation'}
           </button>
         </form>
-
-        <div className="mt-6 text-center text-sm text-gray-600">
-          Already have an account?{' '}
-          <button
-            onClick={() => navigate('/login')}
-            className="text-blue-600 hover:text-blue-700 font-medium"
-          >
-            Sign in
-          </button>
-        </div>
       </div>
     </div>
   );
