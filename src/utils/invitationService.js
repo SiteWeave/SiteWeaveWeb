@@ -110,7 +110,8 @@ export async function sendInvitation(email, organizationId, roleId = null, invit
         const inviterName = inviter?.contacts?.name || 'A team member';
 
         // Construct invitation URLs (web and mobile deep link)
-        const appUrl = window.location.origin;
+        // Remove trailing slashes to prevent double slashes
+        const appUrl = window.location.origin.replace(/\/+$/, '');
         const webInvitationUrl = `${appUrl}/invite/${invitationToken}`;
         const mobileInvitationUrl = `siteweave://invite/${invitationToken}`;
 

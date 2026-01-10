@@ -1,2 +1,3 @@
+# Catch-all: serve index.html for all routes (SPA routing)
+# This handles all paths including /invite/:token and double slashes
 /*    /index.html    200
-
