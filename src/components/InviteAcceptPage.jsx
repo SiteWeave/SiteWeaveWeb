@@ -18,6 +18,9 @@ function InviteAcceptPage() {
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
 
+  // Always render something - never return null
+  console.log('InviteAcceptPage render:', { token, loading, hasInvitation: !!invitation, error, message });
+
   useEffect(() => {
     console.log('InviteAcceptPage mounted, token:', token);
     if (!token) {
