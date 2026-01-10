@@ -1561,14 +1561,17 @@ export default function App() {
         }
       } else {
         // No OAuth callback, just check for existing session
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session) {
-          navigate('/')
+        // But don't redirect if we're on invite or update-password routes
+        if (!location.pathname.startsWith('/invite/') && location.pathname !== '/update-password') {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (session) {
+            navigate('/')
+          }
         }
       }
     }
     handleAuthCallback()
-  }, [navigate])
+  }, [navigate, location.pathname])
   
   if (loading) {
     return (
