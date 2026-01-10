@@ -26,7 +26,11 @@ function InviteAcceptPage() {
       setLoading(false);
       return;
     }
-    loadInvitation();
+    // Small delay to ensure component is mounted
+    const timer = setTimeout(() => {
+      loadInvitation();
+    }, 100);
+    return () => clearTimeout(timer);
   }, [token]);
 
   const loadInvitation = async () => {
@@ -267,21 +271,21 @@ function InviteAcceptPage() {
   }
 
   // Final fallback - if we still don't have an invitation and no error is set, show error
-  if (!invitation) {
+  if (!invitation && !loading) {
     console.error('InviteAcceptPage: No invitation loaded and no error state', { token, error, loading });
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-8 text-center">
+        <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-6 sm:p-8 text-center">
           <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Unable to Load Invitation</h2>
-          <p className="text-gray-600 mb-6">{error || 'Unable to load invitation. Please check the link and try again.'}</p>
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Unable to Load Invitation</h2>
+          <p className="text-sm sm:text-base text-gray-600 mb-6">{error || 'Unable to load invitation. Please check the link and try again.'}</p>
           <button
             onClick={() => navigate('/login')}
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            className="px-4 sm:px-6 py-2 text-sm sm:text-base bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
           >
             Go to Login
           </button>
