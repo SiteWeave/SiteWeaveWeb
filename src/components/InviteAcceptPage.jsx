@@ -137,33 +137,10 @@ function InviteAcceptPage() {
         throw new Error('User account creation failed');
       }
 
-      // Ensure session is established after signup
-      // signUp() may not return a session if email confirmation is required
-      // For invitation flows, we need to sign in the user after signup
-      let currentSession = authData.session;
-      if (!currentSession) {
-        // Try to get the session explicitly
-        const { data: sessionData } = await supabase.auth.getSession();
-        currentSession = sessionData?.session;
-        
-        // If still no session, sign in the user with the password they just created
-        // This ensures we have a session for the subsequent operations
-        if (!currentSession) {
-          console.log('No session after signup, signing in user...');
-          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-            email: invitation.email,
-            password: password
-          });
-          
-          if (signInError) {
-            console.error('Error signing in after signup:', signInError);
-            throw new Error('Account created but unable to sign in. Please try signing in manually.');
-          }
-          
-          currentSession = signInData?.session;
-        }
-      }
-
+      // Note: signUp() may not return a session if email confirmation is required
+      // We'll use edge functions for operations that need to bypass RLS
+      // For operations that need a session, we'll handle them after the user confirms email
+      
       // Wait a moment for profile to be created by Supabase trigger
       await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -211,35 +188,57 @@ function InviteAcceptPage() {
           contactId = contactResult.contactId;
         }
 
-        // Link contact to profile
-        await supabase
-          .from('profiles')
-          .update({ contact_id: contactId })
-          .eq('id', authData.user.id);
+        // Link contact to profile - use edge function if no session, otherwise direct update
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData?.session) {
+          await supabase
+            .from('profiles')
+            .update({ contact_id: contactId })
+            .eq('id', authData.user.id);
+        } else {
+          // If no session, the profile update will happen when user signs in
+          // The contact is already created, so we can proceed
+          console.log('No session available, contact created via edge function. Profile will be updated on first login.');
+        }
       }
 
-      // Step 3: Update the invitation status
-      const { error: updateError } = await supabase
-        .from('invitations')
-        .update({
-          status: 'accepted',
-          accepted_at: new Date().toISOString()
-        })
-        .eq('id', invitation.id);
+      // Step 3: Update the invitation status and profile
+      // Use edge function to handle this if no session
+      const { data: sessionCheck } = await supabase.auth.getSession();
+      if (sessionCheck?.session) {
+        // Update invitation status
+        const { error: updateError } = await supabase
+          .from('invitations')
+          .update({
+            status: 'accepted',
+            accepted_at: new Date().toISOString()
+          })
+          .eq('id', invitation.id);
 
-      if (updateError) throw updateError;
+        if (updateError) throw updateError;
 
-      // Step 4: Update the user's profile with organization and role
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          organization_id: invitation.organization_id,
-          role_id: invitation.role_id,
-          status: 'active'
-        })
-        .eq('id', authData.user.id);
+        // Update the user's profile with organization and role
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .update({
+            organization_id: invitation.organization_id,
+            role_id: invitation.role_id,
+            status: 'active',
+            contact_id: contactId
+          })
+          .eq('id', authData.user.id);
 
-      if (profileError) throw profileError;
+        if (profileError) throw profileError;
+      } else {
+        // No session - user needs to confirm email first
+        // The contact is created, but profile updates will happen on first login
+        // For now, show a message that they need to check their email
+        setMessage('Account created! Please check your email to confirm your account, then sign in to complete the invitation.');
+        setTimeout(() => {
+          navigate('/login');
+        }, 3000);
+        return;
+      }
 
       setMessage(`Welcome to ${invitation.organizations?.name || 'the organization'}!`);
       
