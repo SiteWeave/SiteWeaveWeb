@@ -1465,7 +1465,13 @@ export default function App() {
   const navigate = useNavigate()
   
   // Handle OAuth callback - check for auth code in URL or hash fragments
+  // Skip this for invite routes
   React.useEffect(() => {
+    // Don't process OAuth callbacks on invite or update-password routes
+    if (location.pathname.startsWith('/invite/') || location.pathname === '/update-password') {
+      return;
+    }
+
     const handleAuthCallback = async () => {
       // Check for hash fragment tokens (implicit flow)
       const hash = window.location.hash
