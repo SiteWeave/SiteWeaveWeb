@@ -137,6 +137,26 @@ function InviteAcceptPage() {
         throw new Error('User account creation failed');
       }
 
+      // Ensure session is established after signup
+      // Sometimes signUp doesn't immediately establish a session
+      let currentSession = authData.session;
+      if (!currentSession) {
+        // Try to get the session explicitly
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.warn('Error getting session after signup:', sessionError);
+        } else {
+          currentSession = sessionData?.session;
+        }
+        
+        // If still no session, wait a bit and try again (session might be establishing)
+        if (!currentSession) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const { data: sessionData2 } = await supabase.auth.getSession();
+          currentSession = sessionData2?.session;
+        }
+      }
+
       // Wait a moment for profile to be created by Supabase trigger
       await new Promise(resolve => setTimeout(resolve, 500));
 
