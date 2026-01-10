@@ -138,22 +138,29 @@ function InviteAcceptPage() {
       }
 
       // Ensure session is established after signup
-      // Sometimes signUp doesn't immediately establish a session
+      // signUp() may not return a session if email confirmation is required
+      // For invitation flows, we need to sign in the user after signup
       let currentSession = authData.session;
       if (!currentSession) {
         // Try to get the session explicitly
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          console.warn('Error getting session after signup:', sessionError);
-        } else {
-          currentSession = sessionData?.session;
-        }
+        const { data: sessionData } = await supabase.auth.getSession();
+        currentSession = sessionData?.session;
         
-        // If still no session, wait a bit and try again (session might be establishing)
+        // If still no session, sign in the user with the password they just created
+        // This ensures we have a session for the subsequent operations
         if (!currentSession) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          const { data: sessionData2 } = await supabase.auth.getSession();
-          currentSession = sessionData2?.session;
+          console.log('No session after signup, signing in user...');
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: invitation.email,
+            password: password
+          });
+          
+          if (signInError) {
+            console.error('Error signing in after signup:', signInError);
+            throw new Error('Account created but unable to sign in. Please try signing in manually.');
+          }
+          
+          currentSession = signInData?.session;
         }
       }
 
