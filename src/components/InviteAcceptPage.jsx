@@ -188,23 +188,27 @@ function InviteAcceptPage() {
         if (existingContact) {
           contactId = existingContact.id;
         } else {
-          // Create new contact
-          const { data: newContact, error: contactError } = await supabase
-            .from('contacts')
-            .insert({
-              name: authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User',
+          // Create new contact using edge function to bypass RLS
+          // This is needed because the user might not have a session yet
+          const { data: contactResult, error: contactError } = await supabase.functions.invoke('create-contact-for-invitation', {
+            body: {
+              userId: authData.user.id,
               email: invitation.email,
-              role: 'Team Member',
-              type: 'Team',
-              organization_id: invitation.organization_id,
-              status: 'Available',
-              created_by_user_id: authData.user.id
-            })
-            .select('id')
-            .single();
+              name: authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User',
+              organizationId: invitation.organization_id
+            }
+          });
 
-          if (contactError) throw contactError;
-          contactId = newContact.id;
+          if (contactError) {
+            console.error('Error calling create-contact-for-invitation:', contactError);
+            throw new Error(contactError.message || 'Failed to create contact');
+          }
+
+          if (!contactResult?.success || !contactResult?.contactId) {
+            throw new Error('Failed to create contact: Invalid response from server');
+          }
+
+          contactId = contactResult.contactId;
         }
 
         // Link contact to profile
