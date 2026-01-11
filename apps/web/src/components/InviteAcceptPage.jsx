@@ -145,18 +145,23 @@ function InviteAcceptPage() {
         });
 
         if (confirmError) {
-          console.warn('Failed to auto-confirm user (may require email confirmation):', confirmError);
-          // Continue anyway - user might need to confirm email
+          // 404 means function might not be deployed yet, or network issue
+          if (confirmError.message?.includes('404') || confirmError.message?.includes('not found')) {
+            console.warn('Auto-confirm function not available (404). Email confirmation may be required.');
+          } else {
+            console.warn('Failed to auto-confirm user:', confirmError);
+          }
+          // Continue anyway - if email confirmation is disabled in Supabase settings, sign-in will work
         } else if (confirmResult?.success) {
           console.log('User auto-confirmed successfully');
         }
       } catch (confirmErr) {
         console.warn('Error calling auto-confirm-user:', confirmErr);
-        // Continue anyway
+        // Continue anyway - if email confirmation is disabled in Supabase settings, sign-in will work
       }
 
-      // Wait a moment for profile to be created by Supabase trigger
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Wait longer for account to be fully ready and profile to be created
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Step 2: Ensure contact exists and is linked to profile
       const { data: profile } = await supabase
@@ -230,27 +235,71 @@ function InviteAcceptPage() {
         }
       }
 
-      // Step 3: Try to sign in the user to establish a session
-      // This ensures we have a session for subsequent operations
+      // Step 3: Try to establish a session
+      // Check if we already have a session from signup
       let session = authData.session;
+      
+      // If no session, try to get it
       if (!session) {
-        // Try to sign in with the password they just created
-        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-          email: invitation.email,
-          password: password
-        });
+        const { data: sessionData } = await supabase.auth.getSession();
+        session = sessionData?.session;
+      }
 
-        if (signInError) {
-          // If sign-in fails, user might need email confirmation
-          console.warn('Failed to sign in after signup:', signInError);
-          setMessage('Account created! Please check your email to confirm your account, then sign in to complete the invitation.');
-          setTimeout(() => {
-            navigate('/login');
-          }, 3000);
-          return;
+      // If still no session, wait a bit and try to sign in
+      // The account might need a moment to be fully ready
+      if (!session) {
+        // Wait longer to ensure account is fully created and ready
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Try signing in with retries
+        let signInAttempts = 0;
+        const maxSignInAttempts = 3;
+        let signInSuccess = false;
+
+        while (!signInSuccess && signInAttempts < maxSignInAttempts) {
+          signInAttempts++;
+          console.log(`Sign-in attempt ${signInAttempts}/${maxSignInAttempts}`);
+          
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: invitation.email,
+            password: password
+          });
+
+          if (signInError) {
+            // If sign-in fails, check if it's because email confirmation is required
+            if (signInError.message.includes('Email not confirmed') || 
+                signInError.message.includes('email_not_confirmed') ||
+                signInError.message.includes('Email rate limit exceeded')) {
+              console.warn('Email confirmation required or rate limited');
+              setMessage('Account created! Please check your email to confirm your account, then sign in to complete the invitation.');
+              setTimeout(() => {
+                navigate('/login');
+              }, 3000);
+              return;
+            }
+            
+            // If it's an invalid credentials error, wait and retry (account might not be ready)
+            if (signInError.message.includes('Invalid login credentials') && signInAttempts < maxSignInAttempts) {
+              console.log(`Invalid credentials on attempt ${signInAttempts}, waiting and retrying...`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            
+            // Other sign-in errors
+            console.error('Failed to sign in after signup:', signInError);
+            throw new Error(`Failed to sign in: ${signInError.message}. Please try signing in manually.`);
+          }
+
+          if (signInData?.session) {
+            session = signInData.session;
+            signInSuccess = true;
+            console.log('Successfully signed in after signup');
+          }
         }
 
-        session = signInData?.session;
+        if (!session) {
+          throw new Error('Failed to establish session after multiple attempts. Please try signing in manually.');
+        }
       }
 
       // Step 4: Update the invitation status and profile (now that we have a session)
@@ -272,7 +321,6 @@ function InviteAcceptPage() {
           .update({
             organization_id: invitation.organization_id,
             role_id: invitation.role_id,
-            status: 'active',
             contact_id: contactId
           })
           .eq('id', authData.user.id);

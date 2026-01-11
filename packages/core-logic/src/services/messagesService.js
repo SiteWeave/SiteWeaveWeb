@@ -80,13 +80,14 @@ export async function fetchMessageChannels(supabase) {
  * @returns {Promise<Array>} Array of messages with reactions and read status
  */
 export async function fetchChannelMessages(supabase, channelId, userId = null) {
-  // Fetch top-level messages only (exclude thread replies)
+  // Fetch last 50 top-level messages only (exclude thread replies)
   const { data, error } = await supabase
     .from('messages')
     .select('*')
     .eq('channel_id', channelId)
     .is('parent_message_id', null)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .limit(50);
   
   if (error) throw error;
   
@@ -107,11 +108,8 @@ export async function fetchChannelMessages(supabase, channelId, userId = null) {
   const userIds = [...new Set(filteredData.map(m => m.user_id).filter(Boolean))];
   const userInfo = await fetchUserInfo(supabase, userIds);
   
-  // Fetch reactions for all messages
-  const messageIds = filteredData.map(m => m.id);
-  const reactions = await fetchMessageReactions(supabase, messageIds);
-  
   // Fetch read status if userId provided
+  const messageIds = filteredData.map(m => m.id);
   let readStatuses = {};
   if (userId) {
     const { data: reads } = await supabase
@@ -128,11 +126,10 @@ export async function fetchChannelMessages(supabase, channelId, userId = null) {
     }
   }
   
-  // Attach user info, reactions and read status to messages
+  // Attach user info and read status to messages
   return filteredData.map(message => ({
     ...message,
     user: userInfo[message.user_id] || null,
-    reactions: reactions[message.id] || [],
     isRead: readStatuses[message.id] || false
   }));
 }
@@ -141,7 +138,7 @@ export async function fetchChannelMessages(supabase, channelId, userId = null) {
  * Send a message to a channel
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
  * @param {Object} messageData - Message data
- * @returns {Promise<Object>} Created message
+ * @returns {Promise<Object>} Created message (raw data, no user info)
  */
 export async function sendMessage(supabase, messageData) {
   const { data, error } = await supabase
@@ -157,13 +154,29 @@ export async function sendMessage(supabase, messageData) {
   
   if (error) throw error;
   
-  // Fetch user info for the message author
-  if (data.user_id) {
-    const userInfo = await fetchUserInfo(supabase, [data.user_id]);
-    data.user = userInfo[data.user_id] || null;
+  // Return raw data - let realtime subscription handle user info enrichment
+  return data;
+}
+
+/**
+ * Fetch a single message with user info (for realtime subscription use)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
+ * @param {Object} message - Message object from realtime payload
+ * @returns {Promise<Object>} Message with user info attached
+ */
+export async function fetchMessageWithUserInfo(supabase, message) {
+  if (!message || !message.user_id) {
+    return { ...message, user: null };
   }
   
-  return data;
+  // Fetch user info for the message author
+  const userInfo = await fetchUserInfo(supabase, [message.user_id]);
+  
+  return {
+    ...message,
+    user: userInfo[message.user_id] || null,
+    isRead: false
+  };
 }
 
 /**
@@ -394,14 +407,9 @@ export async function fetchThreadReplies(supabase, parentMessageId) {
   const userIds = [...new Set(data.map(m => m.user_id).filter(Boolean))];
   const userInfo = await fetchUserInfo(supabase, userIds);
   
-  // Fetch reactions for thread replies
-  const messageIds = data.map(m => m.id);
-  const reactions = await fetchMessageReactions(supabase, messageIds);
-  
   return data.map(message => ({
     ...message,
-    user: userInfo[message.user_id] || null,
-    reactions: reactions[message.id] || []
+    user: userInfo[message.user_id] || null
   }));
 }
 
