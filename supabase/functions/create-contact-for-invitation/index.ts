@@ -38,10 +38,7 @@ serve(async (req) => {
   try {
     const { userId, email, name, organizationId } = await req.json()
 
-    console.log('create-contact-for-invitation called with:', { userId, email, name, organizationId })
-
     if (!userId || !email || !organizationId) {
-      console.error('Missing required fields:', { userId: !!userId, email: !!email, organizationId: !!organizationId })
       return new Response(
         JSON.stringify({ error: 'Missing required fields: userId, email, organizationId' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -49,23 +46,14 @@ serve(async (req) => {
     }
 
     // Check if contact already exists
-    const { data: existingContact, error: checkError } = await supabaseAdmin
+    const { data: existingContact } = await supabaseAdmin
       .from('contacts')
       .select('id')
       .ilike('email', email)
       .eq('organization_id', organizationId)
       .maybeSingle()
 
-    if (checkError) {
-      console.error('Error checking for existing contact:', checkError)
-      return new Response(
-        JSON.stringify({ error: `Failed to check for existing contact: ${checkError.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
     if (existingContact) {
-      console.log('Contact already exists:', existingContact.id)
       return new Response(
         JSON.stringify({ success: true, contactId: existingContact.id, existing: true }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -90,12 +78,11 @@ serve(async (req) => {
     if (contactError) {
       console.error('Error creating contact:', contactError)
       return new Response(
-        JSON.stringify({ error: `Failed to create contact: ${contactError.message}`, details: contactError }),
+        JSON.stringify({ error: contactError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    console.log('Contact created successfully:', newContact.id)
     return new Response(
       JSON.stringify({ success: true, contactId: newContact.id }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -104,7 +91,7 @@ serve(async (req) => {
   } catch (error) {
     console.error('Error in create-contact-for-invitation:', error)
     return new Response(
-      JSON.stringify({ error: error.message, stack: error.stack }),
+      JSON.stringify({ error: error.message }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }

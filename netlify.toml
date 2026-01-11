@@ -3,6 +3,10 @@
   command = "npm install && npm run build"
   publish = "dist"
 
+# Redirects configuration
+# The _redirects file in public/ will be copied to dist/ during build
+# This ensures SPA routing works correctly
+
 [build.environment]
   NODE_VERSION = "20"
 
