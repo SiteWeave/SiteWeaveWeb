@@ -38,11 +38,15 @@ $$ LANGUAGE sql SECURITY DEFINER STABLE;
 -- STEP 2: UPDATE PROJECTS TABLE POLICIES WITH ORGANIZATION CHECKS
 -- ============================================================================
 
--- Drop existing projects policies
+-- Drop ALL existing projects policies (old and new names)
 DROP POLICY IF EXISTS "Users can see projects based on their role" ON public.projects;
+DROP POLICY IF EXISTS "Users can see projects in their organization" ON public.projects;
 DROP POLICY IF EXISTS "All authenticated users can create projects" ON public.projects;
+DROP POLICY IF EXISTS "Users can create projects in their organization" ON public.projects;
 DROP POLICY IF EXISTS "Admins and PMs can update projects" ON public.projects;
+DROP POLICY IF EXISTS "Admins and PMs can update projects in their organization" ON public.projects;
 DROP POLICY IF EXISTS "Admins, PMs, and creators can delete projects" ON public.projects;
+DROP POLICY IF EXISTS "Admins, PMs, and creators can delete projects in their organization" ON public.projects;
 
 -- Projects SELECT policy - WITH ORGANIZATION ISOLATION
 CREATE POLICY "Users can see projects in their organization"
@@ -119,10 +123,15 @@ USING (
 -- STEP 3: UPDATE CONTACTS TABLE POLICIES
 -- ============================================================================
 
+-- Drop ALL existing contacts policies (old and new names)
 DROP POLICY IF EXISTS "Users can view their own contacts and contacts with their email" ON public.contacts;
+DROP POLICY IF EXISTS "Users can view contacts in their organization" ON public.contacts;
 DROP POLICY IF EXISTS "Users can create contacts" ON public.contacts;
+DROP POLICY IF EXISTS "Users can create contacts in their organization" ON public.contacts;
 DROP POLICY IF EXISTS "Users can update contacts" ON public.contacts;
+DROP POLICY IF EXISTS "Admins and PMs can update contacts in their organization" ON public.contacts;
 DROP POLICY IF EXISTS "Users can delete contacts" ON public.contacts;
+DROP POLICY IF EXISTS "Admins can delete contacts in their organization" ON public.contacts;
 
 -- Contacts SELECT - only see contacts in their organization
 CREATE POLICY "Users can view contacts in their organization"
@@ -165,10 +174,15 @@ USING (
 -- STEP 4: UPDATE PROJECT_CONTACTS TABLE POLICIES
 -- ============================================================================
 
+-- Drop ALL existing project_contacts policies (old and new names)
 DROP POLICY IF EXISTS "Users can see project contacts for accessible projects" ON public.project_contacts;
+DROP POLICY IF EXISTS "Users can see project contacts in their organization" ON public.project_contacts;
 DROP POLICY IF EXISTS "Admins and PMs can assign contacts to projects" ON public.project_contacts;
+DROP POLICY IF EXISTS "Admins and PMs can assign contacts in their organization" ON public.project_contacts;
 DROP POLICY IF EXISTS "Admins and PMs can update project contacts" ON public.project_contacts;
+DROP POLICY IF EXISTS "Admins and PMs can update project contacts in their organization" ON public.project_contacts;
 DROP POLICY IF EXISTS "Admins and PMs can remove contacts from projects" ON public.project_contacts;
+DROP POLICY IF EXISTS "Admins and PMs can remove project contacts in their organization" ON public.project_contacts;
 
 -- Project contacts SELECT - only for projects in their org
 CREATE POLICY "Users can see project contacts in their organization"
