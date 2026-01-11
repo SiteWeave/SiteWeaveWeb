@@ -1,7 +1,7 @@
 import { View, Text, StyleSheet, FlatList, TextInput, ScrollView, KeyboardAvoidingView, Platform, Pressable, Alert } from 'react-native';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { fetchMessageChannels, fetchChannelMessages, sendMessage } from '@siteweave/core-logic';
+import { fetchMessageChannels, fetchChannelMessages, sendMessage, fetchMessageWithUserInfo } from '@siteweave/core-logic';
 import PressableWithFade from '../../components/PressableWithFade';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,6 +17,7 @@ export default function MessagesScreen() {
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState('');
   const subscriptionRef = useRef(null);
+  const flatListRef = useRef(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState(null);
 
@@ -57,6 +58,10 @@ export default function MessagesScreen() {
     try {
       const data = await fetchChannelMessages(supabase, selectedChannel.id, user?.id);
       setMessages(data);
+      // Scroll to bottom to show newest message
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
     } catch (error) {
       console.error('Error loading messages:', error);
     }
@@ -78,12 +83,21 @@ export default function MessagesScreen() {
         table: 'messages',
         filter: `channel_id=eq.${selectedChannel.id}`,
       }, async (payload) => {
-        // Fetch full message with user info
+        // Fetch user info and append message directly
         try {
-          const data = await fetchChannelMessages(supabase, selectedChannel.id, user?.id);
-          setMessages(data);
+          const enrichedMessage = await fetchMessageWithUserInfo(supabase, payload.new);
+          setMessages(prev => {
+            // Prevent duplicates
+            if (prev.some(m => m.id === enrichedMessage.id)) return prev;
+            const updated = [...prev, enrichedMessage];
+            // Scroll to bottom when new message arrives
+            setTimeout(() => {
+              flatListRef.current?.scrollToEnd({ animated: true });
+            }, 100);
+            return updated;
+          });
         } catch (error) {
-          console.error('Error loading new message:', error);
+          console.error('Error processing new message:', error);
         }
       })
       .subscribe();
@@ -100,21 +114,25 @@ export default function MessagesScreen() {
   const handleSendMessage = async () => {
     if (!messageText.trim() || !selectedChannel || !user) return;
 
+    const textToSend = messageText.trim();
+    
     try {
       haptics.light();
       await sendMessage(supabase, {
         channel_id: selectedChannel.id,
         user_id: user.id,
-        content: messageText,
+        content: textToSend,
         topic: 'text',
         extension: 'txt',
         type: 'text',
       });
       haptics.success();
+      // Only clear after successful insert - realtime will update UI
       setMessageText('');
     } catch (error) {
       console.error('Error sending message:', error);
       haptics.error();
+      // Don't clear input on error
     }
   };
 
@@ -187,9 +205,11 @@ export default function MessagesScreen() {
         {selectedChannel ? (
           <>
             <FlatList
+              ref={flatListRef}
               data={messages}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.messagesList}
+              inverted={false}
               renderItem={({ item }) => (
                 <Pressable
                   style={[
