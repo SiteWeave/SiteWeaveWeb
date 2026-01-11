@@ -1,11 +1,7 @@
 [build]
-  base = "."
-  command = "npm install && npm run build"
-  publish = "dist"
-
-# Redirects configuration
-# The _redirects file in public/ will be copied to dist/ during build
-# This ensures SPA routing works correctly
+  base = "apps/web"
+  command = "cd apps/web && npm install && npm run build"
+  publish = "apps/web/dist"
 
 [build.environment]
   NODE_VERSION = "20"
@@ -29,5 +25,13 @@
   [headers.values]
     Content-Type = "text/css; charset=utf-8"
 
-# Note: /*.js and /*.css patterns removed - they were causing redirect parsing errors
-# MIME types are handled automatically by Netlify for standard file extensions
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Content-Type = "text/css; charset=utf-8"
+

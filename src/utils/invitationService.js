@@ -62,6 +62,7 @@ export async function sendInvitation(email, organizationId, roleId = null, invit
         const invitationToken = generateInvitationToken();
 
         // Create invitation record
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days from now
         const { data: invitation, error: invitationError } = await supabaseClient
             .from('invitations')
             .insert({
@@ -72,7 +73,8 @@ export async function sendInvitation(email, organizationId, roleId = null, invit
                 step_id: stepId,
                 invited_by_user_id: invitedByUserId,
                 invitation_token: invitationToken,
-                status: 'pending'
+                status: 'pending',
+                expires_at: expiresAt
             })
             .select()
             .single();
@@ -111,7 +113,7 @@ export async function sendInvitation(email, organizationId, roleId = null, invit
 
         // Construct invitation URLs (web and mobile deep link)
         // Remove trailing slashes to prevent double slashes
-        const appUrl = window.location.origin.replace(/\/+$/, '');
+        const appUrl = (window.location.origin || '').replace(/\/+$/, '');
         const webInvitationUrl = `${appUrl}/invite/${invitationToken}`;
         const mobileInvitationUrl = `siteweave://invite/${invitationToken}`;
 
@@ -430,7 +432,8 @@ export async function resendInvitation(invitationId) {
             .single();
 
         const inviterName = inviter?.contacts?.name || 'A team member';
-        const appUrl = window.location.origin;
+        // Remove trailing slashes to prevent double slashes
+        const appUrl = (window.location.origin || '').replace(/\/+$/, '');
         const webInvitationUrl = `${appUrl}/invite/${invitation.invitation_token}`;
         const mobileInvitationUrl = `siteweave://invite/${invitation.invitation_token}`;
 

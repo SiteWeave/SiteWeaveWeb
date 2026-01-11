@@ -3,7 +3,6 @@ import { Link, Route, Routes, useNavigate, useParams, useLocation } from 'react-
 import { supabase } from './supabaseClient'
 import LoadingSpinner from './components/LoadingSpinner'
 import InviteAcceptPage from './components/InviteAcceptPage'
-import UpdatePasswordScreen from './components/UpdatePasswordScreen'
 import {
   fetchChannelMessages,
   sendMessage,
@@ -1276,188 +1275,6 @@ function ProjectDetails() {
   )
 }
 
-// Auth Callback Handler Component
-// Handles Supabase auth callbacks (magic links, OAuth) and redirects based on 'next' parameter
-function AuthCallback() {
-  const navigate = useNavigate()
-  const [loading, setLoading] = React.useState(true)
-  const [error, setError] = React.useState(null)
-
-  React.useEffect(() => {
-    const handleAuthCallback = async () => {
-      try {
-        // Get the 'next' parameter from URL, default to '/'
-        const urlParams = new URLSearchParams(window.location.search)
-        const next = urlParams.get('next') || '/'
-        
-        // For magic links, Supabase processes the token automatically
-        // We need to wait a moment for Supabase to process it, then check for session
-        // Also check for hash fragments (OAuth implicit flow) and query params (PKCE flow)
-        
-        // First, wait a brief moment for Supabase to process any magic link tokens
-        await new Promise(resolve => setTimeout(resolve, 500))
-        
-        // Check for hash fragment tokens (OAuth implicit flow)
-        const hash = window.location.hash
-        if (hash && hash.includes('access_token')) {
-          console.log('Auth callback detected (hash fragment), processing tokens...')
-          try {
-            // Parse hash fragment
-            const hashParams = new URLSearchParams(hash.substring(1))
-            const accessToken = hashParams.get('access_token')
-            const refreshToken = hashParams.get('refresh_token')
-            
-            if (accessToken) {
-              // Set session from hash fragment tokens
-              const { data, error: setSessionError } = await supabase.auth.setSession({
-                access_token: accessToken,
-                refresh_token: refreshToken || '',
-              })
-              
-              if (setSessionError) {
-                console.error('Error setting session from hash fragment:', setSessionError)
-                navigate('/login?error=' + encodeURIComponent(setSessionError.message))
-                return
-              }
-              
-              if (data.session) {
-                console.log('Auth successful (hash fragment), redirecting to:', next)
-                // Clear the hash from URL
-                window.history.replaceState({}, document.title, window.location.pathname + window.location.search)
-                navigate(next)
-                return
-              }
-            }
-          } catch (error) {
-            console.error('Error processing hash fragment:', error)
-            navigate('/login?error=' + encodeURIComponent('Failed to process authentication callback'))
-            return
-          }
-        }
-        
-        // Check for query parameters (PKCE flow or magic link tokens)
-        const code = urlParams.get('code')
-        const token = urlParams.get('token')
-        const type = urlParams.get('type')
-        const errorParam = urlParams.get('error')
-        
-        if (errorParam) {
-          console.error('Auth error:', errorParam)
-          navigate('/login?error=' + encodeURIComponent(errorParam))
-          return
-        }
-        
-        // Handle PKCE flow (OAuth)
-        if (code) {
-          console.log('Auth callback detected (PKCE), exchanging code for session...')
-          try {
-            // Exchange code for session (PKCE flow)
-            const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-            
-            if (exchangeError) {
-              console.error('Error exchanging code for session:', exchangeError)
-              // Try to get session as fallback (in case Supabase processed it automatically)
-              const { data: { session } } = await supabase.auth.getSession()
-              if (session) {
-                console.log('Session found after exchange error, proceeding...')
-                window.history.replaceState({}, document.title, window.location.pathname)
-                navigate(next)
-                return
-              }
-              navigate('/login?error=' + encodeURIComponent(exchangeError.message))
-              return
-            }
-            
-            if (data.session) {
-              console.log('Auth successful (PKCE), redirecting to:', next)
-              // Clear the OAuth code from URL
-              window.history.replaceState({}, document.title, window.location.pathname)
-              navigate(next)
-              return
-            } else {
-              console.warn('Code exchange succeeded but no session returned')
-              navigate('/login?error=' + encodeURIComponent('Authentication failed: No session created'))
-            }
-          } catch (error) {
-            console.error('Error during code exchange:', error)
-            navigate('/login?error=' + encodeURIComponent(error.message || 'Failed to complete authentication'))
-            return
-          }
-        }
-        
-        // Handle magic link tokens (Supabase processes these automatically)
-        // Check if we have a token/type in URL (magic link format)
-        if (token || type) {
-          console.log('Magic link detected, waiting for Supabase to process...')
-          // Wait a bit more for Supabase to process the magic link
-          await new Promise(resolve => setTimeout(resolve, 1000))
-        }
-        
-        // Check for existing session (magic links create sessions automatically)
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-        
-        if (sessionError) {
-          console.error('Error getting session:', sessionError)
-          navigate('/login?error=' + encodeURIComponent('Failed to verify authentication'))
-          return
-        }
-        
-        if (session) {
-          console.log('Session found, redirecting to:', next)
-          // Clear any auth tokens from URL
-          window.history.replaceState({}, document.title, window.location.pathname)
-          navigate(next)
-          return
-        } else {
-          // No session found - might be an invalid or expired link
-          console.warn('No session found after processing auth callback')
-          navigate('/login?error=' + encodeURIComponent('Authentication failed. The link may be invalid or expired. Please request a new invitation.'))
-          return
-        }
-      } catch (error) {
-        console.error('Unexpected error in auth callback:', error)
-        setError(error.message || 'An unexpected error occurred')
-        navigate('/login?error=' + encodeURIComponent(error.message || 'Authentication failed'))
-      } finally {
-        setLoading(false)
-      }
-    }
-    
-    handleAuthCallback()
-  }, [navigate])
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <LoadingSpinner size="lg" text="Completing authentication..." />
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-6 sm:p-8 text-center">
-          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-6 h-6 sm:w-8 sm:h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </div>
-          <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Authentication Error</h2>
-          <p className="text-sm sm:text-base text-gray-600 mb-6">{error}</p>
-          <button
-            onClick={() => navigate('/login')}
-            className="px-4 sm:px-6 py-2 text-sm sm:text-base bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-          >
-            Go to Login
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  return null
-}
 
 export default function App() {
   const { session, loading } = UseSession()
@@ -1465,13 +1282,7 @@ export default function App() {
   const navigate = useNavigate()
   
   // Handle OAuth callback - check for auth code in URL or hash fragments
-  // Skip this for invite routes
   React.useEffect(() => {
-    // Don't process OAuth callbacks on invite or update-password routes
-    if (location.pathname.startsWith('/invite/') || location.pathname === '/update-password') {
-      return;
-    }
-
     const handleAuthCallback = async () => {
       // Check for hash fragment tokens (implicit flow)
       const hash = window.location.hash
@@ -1561,17 +1372,14 @@ export default function App() {
         }
       } else {
         // No OAuth callback, just check for existing session
-        // But don't redirect if we're on invite or update-password routes
-        if (!location.pathname.startsWith('/invite/') && location.pathname !== '/update-password') {
-          const { data: { session } } = await supabase.auth.getSession()
-          if (session) {
-            navigate('/')
-          }
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          navigate('/')
         }
       }
     }
     handleAuthCallback()
-  }, [navigate, location.pathname])
+  }, [navigate])
   
   if (loading) {
     return (
@@ -1638,8 +1446,6 @@ export default function App() {
       </nav>
       
       <Routes>
-        <Route path="/auth/callback" element={<AuthCallback />} />
-        <Route path="/update-password" element={<UpdatePasswordScreen />} />
         <Route path="/invite/:token" element={<InviteAcceptPage />} />
         <Route path="/login" element={<Login />} />
         <Route path="/" element={session ? <Home /> : <Login />} />

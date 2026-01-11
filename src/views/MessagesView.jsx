@@ -10,7 +10,8 @@ import {
     sendThreadReply,
     markMessageAsRead,
     fetchUnreadCounts,
-    uploadFile
+    uploadFile,
+    fetchMessageWithUserInfo
 } from '@siteweave/core-logic';
 import { 
     setTypingStatus, 
@@ -183,6 +184,26 @@ function MessagesView() {
         return () => clearInterval(interval);
     }, [activeChannel?.id, state.user?.id]);
 
+    // Load messages when channel changes (MVP pattern - last 50 messages)
+    useEffect(() => {
+        if (!activeChannel || !state.user?.id) return;
+
+        const loadMessages = async () => {
+            try {
+                const messages = await fetchChannelMessages(supabaseClient, activeChannel.id, state.user.id);
+                dispatch({ type: 'SET_CHANNEL_MESSAGES', payload: { channelId: activeChannel.id, messages } });
+                // Auto-scroll to bottom after loading
+                setTimeout(() => {
+                    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                }, 100);
+            } catch (error) {
+                console.error('Error loading messages:', error);
+            }
+        };
+
+        loadMessages();
+    }, [activeChannel?.id, state.user?.id]);
+
     // Real-time subscriptions
     useEffect(() => {
         if (!activeChannel) return;
@@ -195,9 +216,19 @@ function MessagesView() {
                 schema: 'public',
                 table: 'messages',
                 filter: `channel_id=eq.${activeChannel.id}`
-            }, (payload) => {
+            }, async (payload) => {
                 if (!payload.new.parent_message_id) {
-                    dispatch({ type: 'ADD_MESSAGE', payload: payload.new });
+                    // Fetch user info for the new message and append directly
+                    try {
+                        const enrichedMessage = await fetchMessageWithUserInfo(supabaseClient, payload.new);
+                        dispatch({ type: 'ADD_MESSAGE', payload: enrichedMessage });
+                        // Auto-scroll to bottom when new message arrives
+                        setTimeout(() => {
+                            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                        }, 100);
+                    } catch (error) {
+                        console.error('Error processing new message:', error);
+                    }
                 }
             })
             .on('postgres_changes', {
@@ -210,24 +241,6 @@ function MessagesView() {
             })
             .subscribe();
 
-        // Subscribe to reactions
-        const reactionsChannel = supabaseClient
-            .channel(`reactions:${activeChannel.id}`)
-            .on('postgres_changes', {
-                event: '*',
-                schema: 'public',
-                table: 'message_reactions',
-                filter: `message_id=in.(${channelMessages.map(m => m.id).join(',')})`
-            }, async () => {
-                // Refetch reactions for visible messages
-                const messageIds = channelMessages.map(m => m.id);
-                if (messageIds.length > 0) {
-                    const { fetchMessageReactions } = await import('@siteweave/core-logic');
-                    const reactions = await fetchMessageReactions(supabaseClient, messageIds);
-                    dispatch({ type: 'UPDATE_MESSAGE_REACTIONS', payload: reactions });
-                }
-            })
-            .subscribe();
 
         // Subscribe to typing indicators
         const typingChannel = supabaseClient
@@ -247,7 +260,6 @@ function MessagesView() {
 
         return () => {
             supabaseClient.removeChannel(messagesChannel);
-            supabaseClient.removeChannel(reactionsChannel);
             supabaseClient.removeChannel(typingChannel);
         };
     }, [activeChannel?.id, channelMessages.length, state.user?.id, dispatch]);
@@ -297,6 +309,8 @@ function MessagesView() {
         
         previousMessageCountRef.current = currentMessageCount;
     }, [channelMessages.length, state.selectedChannelId]);
+    
+    // Auto-scroll on initial channel load (handled in load messages effect above)
 
     const handleSendMessage = async (file = null) => {
         const content = newMessage.trim();
@@ -348,8 +362,8 @@ function MessagesView() {
                     }
                 }
 
-                const sentMessage = await sendMessage(supabaseClient, messageData);
-                dispatch({ type: 'ADD_MESSAGE', payload: sentMessage });
+                await sendMessage(supabaseClient, messageData);
+                // Don't add message to state - realtime subscription will handle it
             }
 
             // Clear typing status
@@ -357,6 +371,7 @@ function MessagesView() {
                 debouncedTypingRef.current(false);
             }
 
+            // Only clear input after successful send - realtime subscription will update UI
             setNewMessage('');
             setUploadProgress(100);
             setTimeout(() => setUploadProgress(0), 500);

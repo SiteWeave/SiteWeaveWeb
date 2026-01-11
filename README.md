@@ -2,12 +2,6 @@
 
 Client portal for SiteWeave project management platform.
 
-## Recent Updates
-
-- Added invitation acceptance page with auto-accept functionality
-- Invitation links now redirect to organization page after acceptance
-- Supports both new user signup and existing user login flows
-
 ## Setup
 
 1. Install dependencies:

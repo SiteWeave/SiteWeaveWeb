@@ -145,23 +145,18 @@ function InviteAcceptPage() {
         });
 
         if (confirmError) {
-          // 404 means function might not be deployed yet, or network issue
-          if (confirmError.message?.includes('404') || confirmError.message?.includes('not found')) {
-            console.warn('Auto-confirm function not available (404). Email confirmation may be required.');
-          } else {
-            console.warn('Failed to auto-confirm user:', confirmError);
-          }
-          // Continue anyway - if email confirmation is disabled in Supabase settings, sign-in will work
+          console.warn('Failed to auto-confirm user (may require email confirmation):', confirmError);
+          // Continue anyway - user might need to confirm email
         } else if (confirmResult?.success) {
           console.log('User auto-confirmed successfully');
         }
       } catch (confirmErr) {
         console.warn('Error calling auto-confirm-user:', confirmErr);
-        // Continue anyway - if email confirmation is disabled in Supabase settings, sign-in will work
+        // Continue anyway
       }
 
-      // Wait longer for account to be fully ready and profile to be created
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait a moment for profile to be created by Supabase trigger
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Step 2: Ensure contact exists and is linked to profile
       const { data: profile } = await supabase
@@ -235,77 +230,121 @@ function InviteAcceptPage() {
         }
       }
 
-      // Step 3: Try to establish a session
-      // Check if we already have a session from signup
+      // Step 3: Update profile with organization and mark invitation as accepted
+      // Do this BEFORE sign-in attempt so organization is assigned even if sign-in fails
       let session = authData.session;
       
-      // If no session, try to get it
+      // Try to get session if available
       if (!session) {
         const { data: sessionData } = await supabase.auth.getSession();
         session = sessionData?.session;
       }
 
-      // If still no session, wait a bit and try to sign in
-      // The account might need a moment to be fully ready
-      if (!session) {
-        // Wait longer to ensure account is fully created and ready
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Try signing in with retries
-        let signInAttempts = 0;
-        const maxSignInAttempts = 3;
-        let signInSuccess = false;
+      // Update profile with organization (if we have a session, otherwise use edge function)
+      if (session) {
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .update({
+            organization_id: invitation.organization_id,
+            role_id: invitation.role_id,
+            contact_id: contactId
+          })
+          .eq('id', authData.user.id);
 
-        while (!signInSuccess && signInAttempts < maxSignInAttempts) {
-          signInAttempts++;
-          console.log(`Sign-in attempt ${signInAttempts}/${maxSignInAttempts}`);
-          
-          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-            email: invitation.email,
-            password: password
+        if (profileError) {
+          console.error('Error updating profile with organization:', profileError);
+          // Don't throw yet - we'll try again after sign-in
+        }
+      } else {
+        // No session - use edge function to update profile
+        try {
+          const { data: updateResult, error: updateError } = await supabase.functions.invoke('update-profile-organization', {
+            body: {
+              userId: authData.user.id,
+              organizationId: invitation.organization_id,
+              roleId: invitation.role_id,
+              contactId: contactId
+            }
           });
 
-          if (signInError) {
-            // If sign-in fails, check if it's because email confirmation is required
-            if (signInError.message.includes('Email not confirmed') || 
-                signInError.message.includes('email_not_confirmed') ||
-                signInError.message.includes('Email rate limit exceeded')) {
-              console.warn('Email confirmation required or rate limited');
-              setMessage('Account created! Please check your email to confirm your account, then sign in to complete the invitation.');
-              setTimeout(() => {
-                navigate('/login');
-              }, 3000);
-              return;
-            }
-            
-            // If it's an invalid credentials error, wait and retry (account might not be ready)
-            if (signInError.message.includes('Invalid login credentials') && signInAttempts < maxSignInAttempts) {
-              console.log(`Invalid credentials on attempt ${signInAttempts}, waiting and retrying...`);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              continue;
-            }
-            
-            // Other sign-in errors
-            console.error('Failed to sign in after signup:', signInError);
-            throw new Error(`Failed to sign in: ${signInError.message}. Please try signing in manually.`);
+          if (updateError || !updateResult?.success) {
+            console.error('Error updating profile via edge function:', updateError || updateResult);
+            // Continue - we'll try again after sign-in
+          } else {
+            console.log('Profile updated via edge function successfully');
           }
-
-          if (signInData?.session) {
-            session = signInData.session;
-            signInSuccess = true;
-            console.log('Successfully signed in after signup');
-          }
-        }
-
-        if (!session) {
-          throw new Error('Failed to establish session after multiple attempts. Please try signing in manually.');
+        } catch (err) {
+          console.warn('Edge function not available, will update after sign-in:', err);
+          // Continue - we'll update after sign-in succeeds
         }
       }
 
-      // Step 4: Update the invitation status and profile (now that we have a session)
+      // Mark invitation as accepted (this should work even without session via RLS)
+      const { error: updateError } = await supabase
+        .from('invitations')
+        .update({
+          status: 'accepted',
+          accepted_at: new Date().toISOString()
+        })
+        .eq('id', invitation.id);
+
+      if (updateError) {
+        console.error('Error updating invitation status:', updateError);
+        // Continue - we'll try again if sign-in succeeds
+      }
+
+      // Step 4: Try to sign in the user to establish a session
+      if (!session) {
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+          email: invitation.email,
+          password: password
+        });
+
+        if (signInError) {
+          // Organization assignment might have failed if no session
+          // Store invitation data in user metadata so we can complete it on login
+          try {
+            await supabase.auth.updateUser({
+              data: {
+                pending_invitation_id: invitation.id,
+                pending_organization_id: invitation.organization_id,
+                pending_role_id: invitation.role_id,
+                pending_contact_id: contactId
+              }
+            });
+          } catch (metaError) {
+            console.warn('Could not store pending invitation data:', metaError);
+          }
+
+          console.warn('Failed to sign in after signup:', signInError);
+          setMessage('Account created! Please check your email to confirm your account, then sign in to complete the invitation.');
+          setTimeout(() => {
+            navigate('/login');
+          }, 3000);
+          return;
+        }
+
+        session = signInData?.session;
+      }
+
+      // Step 5: Ensure profile is updated with organization (now that we have a session)
       if (session) {
-        // Update invitation status
-        const { error: updateError } = await supabase
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .update({
+            organization_id: invitation.organization_id,
+            role_id: invitation.role_id,
+            contact_id: contactId
+          })
+          .eq('id', authData.user.id);
+
+        if (profileError) {
+          console.error('Error updating profile after sign-in:', profileError);
+          throw new Error(`Failed to assign organization: ${profileError.message}`);
+        }
+
+        // Ensure invitation is marked as accepted
+        const { error: finalUpdateError } = await supabase
           .from('invitations')
           .update({
             status: 'accepted',
@@ -313,22 +352,11 @@ function InviteAcceptPage() {
           })
           .eq('id', invitation.id);
 
-        if (updateError) throw updateError;
-
-        // Update the user's profile with organization and role
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .update({
-            organization_id: invitation.organization_id,
-            role_id: invitation.role_id,
-            status: 'active',
-            contact_id: contactId
-          })
-          .eq('id', authData.user.id);
-
-        if (profileError) throw profileError;
+        if (finalUpdateError) {
+          console.error('Error updating invitation status:', finalUpdateError);
+          // Don't throw - organization assignment succeeded
+        }
       } else {
-        // No session - this shouldn't happen if auto-confirm worked
         throw new Error('Failed to establish session. Please try signing in manually.');
       }
 

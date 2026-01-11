@@ -2,26 +2,29 @@ import React, { useState, useEffect } from 'react';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import Icon from './Icon';
+import Avatar from './Avatar';
 import { fetchThreadReplies, getThreadReplyCount } from '@siteweave/core-logic';
-
-const EMOJI_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 
 function MessageItem({ message, onEdit, onDelete, isGrouped = false, showAvatar = true, showTimestamp = false, isLastInChannel = false, onReply, onThreadExpand }) {
     const { state } = useAppContext();
     const { addToast } = useToast();
     const [isEditing, setIsEditing] = useState(false);
     const [editContent, setEditContent] = useState(message.content || '');
-    const [showReactions, setShowReactions] = useState(false);
     const [isUpdatingMessage, setIsUpdatingMessage] = useState(false);
     const [isDeletingMessage, setIsDeletingMessage] = useState(false);
     const [showThread, setShowThread] = useState(false);
     const [threadReplies, setThreadReplies] = useState([]);
     const [loadingThread, setLoadingThread] = useState(false);
-    const [reactions, setReactions] = useState(message.reactions || []);
-    const [hoveredReaction, setHoveredReaction] = useState(null);
+    const [avatarLoadError, setAvatarLoadError] = useState(false);
+    
+    // Reset avatar error state when message changes
+    useEffect(() => {
+        setAvatarLoadError(false);
+    }, [message.user_id, message.user]);
     
     const isCurrentUser = message.user_id === state.user.id;
-    const user = message.user || message.user_id;
+    // Use the sender's user info (with avatar_url from contacts table)
+    const user = message.user || null;
 
     const formatTime = (isoString) => new Date(isoString).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     const formatDate = (isoString) => new Date(isoString).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -59,75 +62,6 @@ function MessageItem({ message, onEdit, onDelete, isGrouped = false, showAvatar 
         setIsDeletingMessage(false);
     };
 
-    // Load reactions when message changes
-    useEffect(() => {
-        if (message.reactions) {
-            setReactions(message.reactions);
-        }
-    }, [message.reactions]);
-
-    const handleToggleReaction = async (emoji) => {
-        // Check if user already reacted with this emoji
-        const existingReaction = reactions.find(r => 
-            r.emoji === emoji && r.users?.some(u => u?.id === state.user.id)
-        );
-
-        if (existingReaction) {
-            // Remove reaction
-            const { error } = await supabaseClient
-                .from('message_reactions')
-                .delete()
-                .eq('message_id', message.id)
-                .eq('user_id', state.user.id)
-                .eq('emoji', emoji);
-            
-            if (error) {
-                addToast('Error removing reaction: ' + error.message, 'error');
-            } else {
-                // Update local state
-                setReactions(prev => prev.map(r => {
-                    if (r.emoji === emoji) {
-                        return {
-                            ...r,
-                            count: r.count - 1,
-                            users: r.users.filter(u => u?.id !== state.user.id)
-                        };
-                    }
-                    return r;
-                }).filter(r => r.count > 0));
-            }
-        } else {
-            // Add reaction
-            const { error } = await supabaseClient
-                .from('message_reactions')
-                .insert({
-                    message_id: message.id,
-                    user_id: state.user.id,
-                    emoji: emoji
-                });
-            
-            if (error) {
-                addToast('Error adding reaction: ' + error.message, 'error');
-            } else {
-                // Update local state
-                const existing = reactions.find(r => r.emoji === emoji);
-                if (existing) {
-                    setReactions(prev => prev.map(r => 
-                        r.emoji === emoji 
-                            ? { ...r, count: r.count + 1, users: [...(r.users || []), { id: state.user.id, name: state.user.user_metadata?.full_name || state.user.email }] }
-                            : r
-                    ));
-                } else {
-                    setReactions(prev => [...prev, { emoji, count: 1, users: [{ id: state.user.id, name: state.user.user_metadata?.full_name || state.user.email }] }]);
-                }
-            }
-        }
-        setShowReactions(false);
-    };
-
-    const handleAddReaction = async (emoji) => {
-        await handleToggleReaction(emoji);
-    };
 
     const handleLoadThread = async () => {
         if (showThread) {
@@ -193,14 +127,26 @@ function MessageItem({ message, onEdit, onDelete, isGrouped = false, showAvatar 
     
     return (
         <div className={`flex items-start gap-3 group ${isGrouped ? 'my-1' : 'my-4'} ${isCurrentUser ? 'flex-row-reverse' : ''}`}>
-            {showAvatar && (
-                <img 
-                    src={user?.avatar_url || 'https://i.pravatar.cc/150?u=anonymous'} 
-                    alt={user?.name} 
-                    className="w-10 h-10 rounded-full flex-shrink-0" 
-                />
+            {/* Always show avatar for current user, or show for others when showAvatar is true */}
+            {/* Use the sender's avatar from contacts.avatar_url (fetched via fetchMessageWithUserInfo) */}
+            {/* This matches the pattern used in TeamDirectory, DirectoryManagementModal, and ContactCard */}
+            {(showAvatar || isCurrentUser) && (
+                user?.avatar_url && !avatarLoadError ? (
+                    <img 
+                        src={user.avatar_url} 
+                        alt={user.name || 'User'} 
+                        className="w-10 h-10 rounded-full flex-shrink-0 object-cover" 
+                        onError={() => setAvatarLoadError(true)}
+                    />
+                ) : (
+                    <Avatar 
+                        name={user?.name || 'User'} 
+                        size="lg" 
+                        className="flex-shrink-0"
+                    />
+                )
             )}
-            {!showAvatar && <div className="w-10 flex-shrink-0" />}
+            {!showAvatar && !isCurrentUser && <div className="w-10 flex-shrink-0" />}
             <div className="flex flex-col gap-1 max-w-[70%] min-w-0 flex-1">
                 {showTimestamp && (
                     <div className={`flex items-baseline gap-2 ${isCurrentUser ? 'self-end' : ''}`}>
@@ -297,62 +243,11 @@ function MessageItem({ message, onEdit, onDelete, isGrouped = false, showAvatar 
                                             </button>
                                         </>
                                     )}
-                                    <button
-                                        onClick={() => setShowReactions(!showReactions)}
-                                        className="p-1 hover:bg-white hover:bg-opacity-20 rounded"
-                                        title="Add reaction"
-                                    >
-                                        <Icon path="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" className="w-4 h-4" />
-                                    </button>
                                 </div>
                             </div>
                         </>
                     )}
                 </div>
-
-                {/* Reactions - Slack style inline */}
-                {(reactions.length > 0 || showReactions) && (
-                    <div className="flex items-center gap-1 mt-1 flex-wrap">
-                        {reactions.map((reaction, idx) => {
-                            const userReacted = reaction.users?.some(u => u?.id === state.user.id);
-                            return (
-                                <button
-                                    key={idx}
-                                    onClick={() => handleToggleReaction(reaction.emoji)}
-                                    onMouseEnter={() => setHoveredReaction(reaction)}
-                                    onMouseLeave={() => setHoveredReaction(null)}
-                                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors ${
-                                        userReacted 
-                                            ? 'bg-blue-100 border border-blue-300' 
-                                            : 'bg-gray-100 hover:bg-gray-200 border border-transparent'
-                                    }`}
-                                >
-                                    <span>{reaction.emoji}</span>
-                                    <span className="text-gray-600">{reaction.count}</span>
-                                    {hoveredReaction === reaction && reaction.users && reaction.users.length > 0 && (
-                                        <div className="absolute bottom-full left-0 mb-2 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10">
-                                            {reaction.users.map(u => u?.name || 'Unknown').join(', ')}
-                                        </div>
-                                    )}
-                                </button>
-                            );
-                        })}
-                        
-                        {showReactions && (
-                            <div className="flex gap-1 bg-white border border-gray-200 rounded-lg p-2 shadow-lg z-10">
-                                {EMOJI_REACTIONS.map(emoji => (
-                                    <button
-                                        key={emoji}
-                                        onClick={() => handleAddReaction(emoji)}
-                                        className="text-lg hover:scale-125 transition-transform"
-                                    >
-                                        {emoji}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                )}
 
                 {/* Read Receipts - Only for current user's messages and only on the very last message in the channel */}
                 {isCurrentUser && isLastInChannel && (

@@ -290,12 +290,66 @@ export async function fetchUnreadCounts(supabase, userId, channelIds) {
  * @returns {Promise<void>}
  */
 export async function markMessageAsRead(supabase, messageId, userId) {
-  // Upsert read receipt
+  // First, get the message with its organization_id (either directly or via channel -> project)
+  const { data: message, error: messageError } = await supabase
+    .from('messages')
+    .select('channel_id, created_at, organization_id')
+    .eq('id', messageId)
+    .single();
+  
+  if (messageError) throw messageError;
+  if (!message) throw new Error('Message not found');
+  
+  // Get organization_id from message, or fetch from channel -> project if not set
+  let organizationId = message.organization_id;
+  
+  if (!organizationId && message.channel_id) {
+    const { data: channel } = await supabase
+      .from('message_channels')
+      .select('organization_id, project_id')
+      .eq('id', message.channel_id)
+      .single();
+    
+    if (channel?.organization_id) {
+      organizationId = channel.organization_id;
+    } else if (channel?.project_id) {
+      // Fallback: get from project
+      const { data: project } = await supabase
+        .from('projects')
+        .select('organization_id')
+        .eq('id', channel.project_id)
+        .single();
+      
+      if (project?.organization_id) {
+        organizationId = project.organization_id;
+      }
+    }
+  }
+  
+  // If still no organization_id, try to get from user's profile
+  if (!organizationId) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('organization_id')
+      .eq('id', userId)
+      .single();
+    
+    if (profile?.organization_id) {
+      organizationId = profile.organization_id;
+    }
+  }
+  
+  if (!organizationId) {
+    throw new Error('Unable to determine organization_id for message read');
+  }
+  
+  // Upsert read receipt with organization_id
   const { error } = await supabase
     .from('message_reads')
     .upsert({
       message_id: messageId,
       user_id: userId,
+      organization_id: organizationId,
       read_at: new Date().toISOString()
     }, {
       onConflict: 'message_id,user_id'
@@ -304,18 +358,13 @@ export async function markMessageAsRead(supabase, messageId, userId) {
   if (error) throw error;
   
   // Update channel_reads with latest read message
-  const { data: message } = await supabase
-    .from('messages')
-    .select('channel_id, created_at')
-    .eq('id', messageId)
-    .single();
-  
-  if (message) {
+  if (message.channel_id) {
     await supabase
       .from('channel_reads')
       .upsert({
         user_id: userId,
         channel_id: message.channel_id,
+        organization_id: organizationId,
         last_read_message_id: messageId,
         last_read_at: message.created_at
       }, {

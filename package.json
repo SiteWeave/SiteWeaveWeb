@@ -1,7 +1,7 @@
 {
   "name": "siteweave-web",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@siteweave/core-logic": "file:./packages/core-logic",
+    "@siteweave/core-logic": "file:../../packages/core-logic",
     "@supabase/supabase-js": "^2.45.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",

@@ -122,16 +122,8 @@ function UpdatePasswordScreen() {
         throw updateError;
       }
 
-      // Step 2: Update user profile metadata (set status to active)
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({ status: 'active' })
-        .eq('id', session.user.id);
-
-      if (profileError) {
-        // Log error but don't fail - profile might not exist yet or update might not be critical
-        console.warn('Error updating profile status:', profileError);
-      }
+      // Step 2: Profile update removed - profiles table doesn't have a status column
+      // The profile is automatically created/updated via database triggers
 
       // Step 3: Show success message and redirect
       setSuccess(true);

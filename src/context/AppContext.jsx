@@ -62,7 +62,28 @@ function appReducer(state, action) {
       ...state, 
       calendarEvents: state.calendarEvents.filter(event => event.id !== action.payload) 
     };
-    case 'ADD_MESSAGE': return { ...state, messages: [...state.messages, action.payload] };
+    case 'ADD_MESSAGE': {
+      // Prevent duplicates
+      const exists = state.messages.some(m => m.id === action.payload.id);
+      if (exists) return state;
+      return { ...state, messages: [...state.messages, action.payload] };
+    }
+    case 'UPDATE_MESSAGE': {
+      return { 
+        ...state, 
+        messages: state.messages.map(msg => 
+          msg.id === action.payload.id ? action.payload : msg
+        ) 
+      };
+    }
+    case 'SET_CHANNEL_MESSAGES': {
+      // Set messages for a specific channel (replaces existing messages for that channel)
+      const channelId = action.payload.channelId;
+      const newMessages = action.payload.messages;
+      // Remove existing messages for this channel and add new ones
+      const filteredMessages = state.messages.filter(m => m.channel_id !== channelId);
+      return { ...state, messages: [...filteredMessages, ...newMessages] };
+    }
     case 'ADD_CHANNEL': return { ...state, messageChannels: [...state.messageChannels, action.payload] };
     case 'ADD_ACTIVITY': return { ...state, activityLog: [action.payload, ...state.activityLog].slice(0, 50) }; // Keep latest 50
     case 'ADD_CONTACT': {
@@ -212,6 +233,58 @@ export const AppProvider = ({ children }) => {
             dispatch({ type: 'SET_USER', payload: null });
           } else if (session?.user) {
             dispatch({ type: 'SET_USER', payload: session.user });
+            
+            // Check for pending invitation in user metadata and complete it
+            const pendingInvitationId = session.user.user_metadata?.pending_invitation_id;
+            if (pendingInvitationId && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
+              try {
+                const pendingOrgId = session.user.user_metadata?.pending_organization_id;
+                const pendingRoleId = session.user.user_metadata?.pending_role_id;
+                const pendingContactId = session.user.user_metadata?.pending_contact_id;
+                
+                if (pendingOrgId) {
+                  console.log('Completing pending invitation:', pendingInvitationId);
+                  
+                  // Update profile with organization
+                  const { error: profileError } = await supabaseClient
+                    .from('profiles')
+                    .update({
+                      organization_id: pendingOrgId,
+                      role_id: pendingRoleId || null,
+                      contact_id: pendingContactId || null
+                    })
+                    .eq('id', session.user.id);
+
+                  if (!profileError) {
+                    // Mark invitation as accepted
+                    await supabaseClient
+                      .from('invitations')
+                      .update({
+                        status: 'accepted',
+                        accepted_at: new Date().toISOString()
+                      })
+                      .eq('id', pendingInvitationId);
+
+                    // Clear pending invitation from metadata
+                    await supabaseClient.auth.updateUser({
+                      data: {
+                        pending_invitation_id: null,
+                        pending_organization_id: null,
+                        pending_role_id: null,
+                        pending_contact_id: null
+                      }
+                    });
+
+                    console.log('Pending invitation completed successfully');
+                  } else {
+                    console.error('Error completing pending invitation:', profileError);
+                  }
+                }
+              } catch (pendingErr) {
+                console.error('Error handling pending invitation:', pendingErr);
+                // Don't block login if this fails
+              }
+            }
           } else {
             dispatch({ type: 'SET_USER', payload: null });
           }
@@ -564,7 +637,8 @@ export const AppProvider = ({ children }) => {
             supabaseClient.from('files').select('*'),
             supabaseClient.from('calendar_events').select('*'),
             supabaseClient.from('message_channels').select('*'),
-            supabaseClient.from('messages').select('*').order('created_at', { ascending: true }),
+            // Don't load all messages initially - load per channel when needed (MVP pattern)
+            Promise.resolve({ data: [] }),
             supabaseClient.from('user_preferences').select('*').eq('user_id', state.user.id).maybeSingle(),
             supabaseClient.from('activity_log').select('*').order('created_at', { ascending: false }).limit(50)
           ]);
@@ -744,34 +818,19 @@ export const AppProvider = ({ children }) => {
       })
       .subscribe();
 
+    // Messages are now loaded per-channel in MessagesView component (MVP pattern)
+    // This global subscription is kept for backwards compatibility but MessagesView handles its own subscription
     const messagesSubscription = supabaseClient.channel('public:messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
-        const { data: newMessage } = await supabaseClient.from('messages').select('*').eq('id', payload.new.id).single();
-        if (newMessage && newMessage.user_id) {
-          // Fetch user info from contacts via profiles (using separate queries to avoid relationship ambiguity)
-          const { data: profile } = await supabaseClient
-            .from('profiles')
-            .select('id, contact_id')
-            .eq('id', newMessage.user_id)
-            .maybeSingle();
-          
-          if (profile?.contact_id) {
-            const { data: contact } = await supabaseClient
-              .from('contacts')
-              .select('id, name, avatar_url')
-              .eq('id', profile.contact_id)
-              .maybeSingle();
-            
-            if (contact) {
-              newMessage.user = {
-                id: profile.id,
-                name: contact.name,
-                avatar_url: contact.avatar_url
-              };
-            }
-          }
+        // MessagesView handles its own subscription with fetchMessageWithUserInfo
+        // This global subscription is kept minimal for other components that might need it
+        const { fetchMessageWithUserInfo } = await import('@siteweave/core-logic');
+        try {
+          const enrichedMessage = await fetchMessageWithUserInfo(supabaseClient, payload.new);
+          dispatch({ type: 'ADD_MESSAGE', payload: enrichedMessage });
+        } catch (error) {
+          console.error('Error processing message in global subscription:', error);
         }
-        if (newMessage) dispatch({ type: 'ADD_MESSAGE', payload: newMessage });
       })
       .subscribe();
 

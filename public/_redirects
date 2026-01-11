@@ -1,3 +1,5 @@
-# Catch-all: serve index.html for all routes (SPA routing)
-# This handles all paths including /invite/:token and double slashes
+# SPA routing: redirect all non-file routes to index.html
+# Netlify automatically serves static files (in /assets/, etc.) if they exist
+# This redirect only applies when the requested path doesn't match a file
 /*    /index.html    200
+
