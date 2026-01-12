@@ -253,7 +253,7 @@ function InviteAcceptPage() {
         console.log('Contact already linked to profile:', contactId);
       }
 
-        // Verify contact exists and has email/name
+        // Verify contact exists and has email/name/organization_id
         if (contactId) {
           const { data: contactVerify } = await supabase
             .from('contacts')
@@ -266,7 +266,7 @@ function InviteAcceptPage() {
             throw new Error('Contact was created but cannot be found. Please contact support.');
           }
           
-          // Ensure contact has email and name
+          // Ensure contact has email, name, and organization_id
           const updates = {};
           if (!contactVerify.email) {
             updates.email = invitation.email.toLowerCase();
@@ -274,6 +274,11 @@ function InviteAcceptPage() {
           const userName = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
           if (!contactVerify.name || contactVerify.name === 'User' || contactVerify.name === 'Unnamed User') {
             updates.name = userName;
+          }
+          // CRITICAL: Ensure contact has organization_id set
+          if (!contactVerify.organization_id) {
+            updates.organization_id = invitation.organization_id;
+            console.log('Contact missing organization_id, setting to:', invitation.organization_id);
           }
           
           if (Object.keys(updates).length > 0) {
@@ -284,7 +289,7 @@ function InviteAcceptPage() {
               .eq('id', contactId);
           }
           
-          console.log('Contact verified:', { id: contactVerify.id, email: contactVerify.email || updates.email, name: contactVerify.name || updates.name });
+          console.log('Contact verified:', { id: contactVerify.id, email: contactVerify.email || updates.email, name: contactVerify.name || updates.name, organization_id: contactVerify.organization_id || updates.organization_id });
         }
 
       // Step 3: Update profile with organization and mark invitation as accepted
@@ -482,7 +487,7 @@ function InviteAcceptPage() {
         
         console.log('Profile verification:', profileVerification);
         
-        // Final verification - ensure contact exists and has email
+        // Final verification - ensure contact exists and has email, name, and organization_id
         if (profileVerification?.contact_id) {
           const { data: finalContact } = await supabase
             .from('contacts')
@@ -492,13 +497,18 @@ function InviteAcceptPage() {
           
           if (finalContact) {
             console.log('Final contact verification:', finalContact);
-            // One more update to ensure email and name are set
+            // One more update to ensure email, name, and organization_id are set
             const finalUpdates = {};
             if (!finalContact.email) {
               finalUpdates.email = invitation.email.toLowerCase();
             }
             if (!finalContact.name || finalContact.name === 'User' || finalContact.name === 'Unnamed User') {
               finalUpdates.name = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
+            }
+            // CRITICAL: Ensure contact has organization_id set
+            if (!finalContact.organization_id) {
+              finalUpdates.organization_id = invitation.organization_id;
+              console.log('Final contact missing organization_id, setting to:', invitation.organization_id);
             }
             
             if (Object.keys(finalUpdates).length > 0) {
