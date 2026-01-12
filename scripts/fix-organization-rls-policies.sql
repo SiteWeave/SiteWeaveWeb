@@ -12,14 +12,30 @@ RETURNS UUID AS $$
   SELECT organization_id FROM public.profiles WHERE id = auth.uid();
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
--- Update get_user_role to work with new role_id system
--- Returns the role name from the roles table
+-- Update get_user_role to work with both old TEXT role and new role_id system
+-- Returns the role name, checking role_id first, then falling back to TEXT role field
 CREATE OR REPLACE FUNCTION get_user_role()
 RETURNS TEXT AS $$
-  SELECT r.name 
-  FROM public.profiles p
-  LEFT JOIN public.roles r ON p.role_id = r.id
-  WHERE p.id = auth.uid();
+  SELECT COALESCE(
+    -- Try new role_id system first
+    (SELECT r.name 
+     FROM public.profiles p
+     LEFT JOIN public.roles r ON p.role_id = r.id
+     WHERE p.id = auth.uid()),
+    -- Fallback to old TEXT role field
+    (SELECT role::TEXT 
+     FROM public.profiles 
+     WHERE id = auth.uid())
+  );
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Helper to check if user is admin (checks both is_super_admin flag and role name)
+CREATE OR REPLACE FUNCTION is_user_admin()
+RETURNS BOOLEAN AS $$
+  SELECT COALESCE(
+    (SELECT is_super_admin FROM public.profiles WHERE id = auth.uid()),
+    false
+  ) OR get_user_role() = 'Admin';
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
 -- Helper to check if user has a specific permission
@@ -38,15 +54,16 @@ $$ LANGUAGE sql SECURITY DEFINER STABLE;
 -- STEP 2: UPDATE PROJECTS TABLE POLICIES WITH ORGANIZATION CHECKS
 -- ============================================================================
 
--- Drop ALL existing projects policies (old and new names)
-DROP POLICY IF EXISTS "Users can see projects based on their role" ON public.projects;
-DROP POLICY IF EXISTS "Users can see projects in their organization" ON public.projects;
-DROP POLICY IF EXISTS "All authenticated users can create projects" ON public.projects;
-DROP POLICY IF EXISTS "Users can create projects in their organization" ON public.projects;
-DROP POLICY IF EXISTS "Admins and PMs can update projects" ON public.projects;
-DROP POLICY IF EXISTS "Admins and PMs can update projects in their organization" ON public.projects;
-DROP POLICY IF EXISTS "Admins, PMs, and creators can delete projects" ON public.projects;
-DROP POLICY IF EXISTS "Admins, PMs, and creators can delete projects in their organization" ON public.projects;
+-- Drop ALL existing projects policies (comprehensive cleanup)
+-- This ensures no conflicts regardless of how policies were created
+DO $$ 
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'projects' AND schemaname = 'public') LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.projects', r.policyname);
+  END LOOP;
+END $$;
 
 -- Projects SELECT policy - WITH ORGANIZATION ISOLATION
 CREATE POLICY "Users can see projects in their organization"
@@ -56,8 +73,8 @@ USING (
   -- CRITICAL: Must be in same organization
   organization_id = get_user_organization_id()
   AND (
-    -- Admin can see all projects in their org
-    (get_user_role() = 'Admin')
+    -- Admin can see ALL projects in their org (even if not explicitly added)
+    is_user_admin()
     OR
     -- PMs see their assigned projects
     (project_manager_id = auth.uid())
@@ -98,7 +115,7 @@ FOR UPDATE
 USING (
   organization_id = get_user_organization_id()
   AND (
-    (get_user_role() = 'Admin')
+    is_user_admin()
     OR
     (project_manager_id = auth.uid())
   )
@@ -111,7 +128,7 @@ FOR DELETE
 USING (
   organization_id = get_user_organization_id()
   AND (
-    (get_user_role() = 'Admin')
+    is_user_admin()
     OR
     (project_manager_id = auth.uid())
     OR
@@ -123,15 +140,15 @@ USING (
 -- STEP 3: UPDATE CONTACTS TABLE POLICIES
 -- ============================================================================
 
--- Drop ALL existing contacts policies (old and new names)
-DROP POLICY IF EXISTS "Users can view their own contacts and contacts with their email" ON public.contacts;
-DROP POLICY IF EXISTS "Users can view contacts in their organization" ON public.contacts;
-DROP POLICY IF EXISTS "Users can create contacts" ON public.contacts;
-DROP POLICY IF EXISTS "Users can create contacts in their organization" ON public.contacts;
-DROP POLICY IF EXISTS "Users can update contacts" ON public.contacts;
-DROP POLICY IF EXISTS "Admins and PMs can update contacts in their organization" ON public.contacts;
-DROP POLICY IF EXISTS "Users can delete contacts" ON public.contacts;
-DROP POLICY IF EXISTS "Admins can delete contacts in their organization" ON public.contacts;
+-- Drop ALL existing contacts policies (comprehensive cleanup)
+DO $$ 
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'contacts' AND schemaname = 'public') LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.contacts', r.policyname);
+  END LOOP;
+END $$;
 
 -- Contacts SELECT - only see contacts in their organization
 CREATE POLICY "Users can view contacts in their organization"
@@ -158,7 +175,7 @@ ON public.contacts
 FOR UPDATE
 USING (
   organization_id = get_user_organization_id()
-  AND (get_user_role() IN ('Admin', 'PM'))
+  AND (is_user_admin() OR get_user_role() = 'PM')
 );
 
 -- Contacts DELETE - can only delete contacts in their org
@@ -167,22 +184,22 @@ ON public.contacts
 FOR DELETE
 USING (
   organization_id = get_user_organization_id()
-  AND (get_user_role() = 'Admin')
+  AND is_user_admin()
 );
 
 -- ============================================================================
 -- STEP 4: UPDATE PROJECT_CONTACTS TABLE POLICIES
 -- ============================================================================
 
--- Drop ALL existing project_contacts policies (old and new names)
-DROP POLICY IF EXISTS "Users can see project contacts for accessible projects" ON public.project_contacts;
-DROP POLICY IF EXISTS "Users can see project contacts in their organization" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can assign contacts to projects" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can assign contacts in their organization" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can update project contacts" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can update project contacts in their organization" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can remove contacts from projects" ON public.project_contacts;
-DROP POLICY IF EXISTS "Admins and PMs can remove project contacts in their organization" ON public.project_contacts;
+-- Drop ALL existing project_contacts policies (comprehensive cleanup)
+DO $$ 
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'project_contacts' AND schemaname = 'public') LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.project_contacts', r.policyname);
+  END LOOP;
+END $$;
 
 -- Project contacts SELECT - only for projects in their org
 CREATE POLICY "Users can see project contacts in their organization"
@@ -199,8 +216,13 @@ FOR INSERT
 WITH CHECK (
   organization_id = get_user_organization_id()
   AND (
-    (get_user_role() = 'Admin')
+    -- Admins can add any contact in their organization
+    (is_user_admin() AND contact_id IN (
+      SELECT id FROM public.contacts 
+      WHERE organization_id = get_user_organization_id()
+    ))
     OR
+    -- PMs can add contacts to their projects
     (project_id IN (
       SELECT id FROM public.projects
       WHERE project_manager_id = auth.uid()
@@ -223,7 +245,7 @@ FOR UPDATE
 USING (
   organization_id = get_user_organization_id()
   AND (
-    (get_user_role() = 'Admin')
+    is_user_admin()
     OR
     (project_id IN (
       SELECT id FROM public.projects
@@ -240,7 +262,7 @@ FOR DELETE
 USING (
   organization_id = get_user_organization_id()
   AND (
-    (get_user_role() = 'Admin')
+    is_user_admin()
     OR
     (project_id IN (
       SELECT id FROM public.projects
@@ -258,6 +280,8 @@ USING (
 -- SELECT COUNT(*) FROM projects; -- Should only show projects in your org
 
 COMMENT ON FUNCTION get_user_organization_id() IS 'Returns the organization_id of the current user. Used by RLS policies for multi-tenant isolation.';
+COMMENT ON FUNCTION get_user_role() IS 'Returns the role name of the current user. Handles both old TEXT role field and new role_id system.';
+COMMENT ON FUNCTION is_user_admin() IS 'Returns true if the current user is an admin. Checks both is_super_admin flag and role name.';
 COMMENT ON FUNCTION user_has_permission(TEXT) IS 'Checks if the current user has a specific permission in their role.';
 
 -- Migration complete!

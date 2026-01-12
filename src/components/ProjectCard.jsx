@@ -10,10 +10,45 @@ const ProjectCard = memo(function ProjectCard({ project, onEdit, onDelete }) {
     const { dispatch, state } = useAppContext();
     const [showActions, setShowActions] = useState(false);
     
-    // Get all members for this project (any contact linked via project_contacts)
-    const teamMembers = state.contacts.filter(contact => 
-        contact.project_contacts && contact.project_contacts.some(pc => pc.project_id === project.id)
+    // Get all members for this project:
+    // 1. Contacts explicitly added via project_contacts
+    // 2. Project creator (if they have a contact_id)
+    // 3. Project manager (if they have a contact_id)
+    // 4. Organization admins (if showing full team)
+    const projectContactIds = new Set(
+        state.contacts
+            .filter(contact => 
+                contact.project_contacts && contact.project_contacts.some(pc => pc.project_id === project.id)
+            )
+            .map(contact => contact.id)
     );
+    
+    // Add creator if they have a contact and aren't already in the list
+    if (project.created_by_user_id) {
+        const creatorContact = state.contacts.find(contact => 
+            contact.id && state.profiles?.find(p => 
+                p.id === project.created_by_user_id && p.contact_id === contact.id
+            )
+        );
+        if (creatorContact && !projectContactIds.has(creatorContact.id)) {
+            projectContactIds.add(creatorContact.id);
+        }
+    }
+    
+    // Add manager if they have a contact and aren't already in the list
+    if (project.project_manager_id) {
+        const managerContact = state.contacts.find(contact => 
+            contact.id && state.profiles?.find(p => 
+                p.id === project.project_manager_id && p.contact_id === contact.id
+            )
+        );
+        if (managerContact && !projectContactIds.has(managerContact.id)) {
+            projectContactIds.add(managerContact.id);
+        }
+    }
+    
+    // Get final team members list
+    const teamMembers = state.contacts.filter(contact => projectContactIds.has(contact.id));
     
     // Auto-determine status color based on status (using helper from projectHelpers)
     const getStatusColor = (status) => {

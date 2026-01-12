@@ -75,9 +75,23 @@ function ProjectDetailsView() {
     const allTasks = state.tasks.filter(t => t.project_id === state.selectedProjectId);
     
     // Get all project crew members (any contact linked to this project)
-    const crewMembers = state.contacts.filter(contact => 
+    const projectCrewMembers = state.contacts.filter(contact => 
         contact.project_contacts && contact.project_contacts.some(pc => pc.project_id === project?.id)
     );
+    
+    // Ensure owner is always included in crew members
+    const ownerContactId = project?.created_by_user_id
+        ? (state.profiles?.find(p => p.id === project.created_by_user_id)?.contact_id || null)
+        : null;
+    
+    const ownerContact = ownerContactId
+        ? state.contacts.find(c => c.id === ownerContactId)
+        : null;
+    
+    // Combine project crew with owner (if owner not already included)
+    const crewMembers = ownerContact && !projectCrewMembers.some(c => c.id === ownerContact.id)
+        ? [ownerContact, ...projectCrewMembers]
+        : projectCrewMembers;
     
     // Filter and sort tasks
     const filteredTasks = allTasks.filter(task => {

@@ -191,7 +191,7 @@ function CalendarView() {
     const loadWeatherForCalendar = async () => {
         try {
             // Get saved city preference or use default
-            const savedCity = localStorage.getItem('weather_location_preference') || 'New York';
+            const savedCity = localStorage.getItem('weather_location_preference') || 'Austin';
             setWeatherCity(savedCity);
             
             // Fetch extended forecast (14 days)

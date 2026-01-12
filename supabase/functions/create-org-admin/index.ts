@@ -123,6 +123,41 @@ serve(async (req) => {
 
     console.log(`Member role created: ${memberRole.id}`)
 
+    // "Project Manager" role with project management permissions
+    const { data: pmRole, error: pmRoleError } = await supabaseAdmin
+      .from('roles')
+      .insert({
+        organization_id: org.id,
+        name: 'Project Manager',
+        permissions: {
+          can_manage_team: false,
+          can_manage_users: false,
+          can_manage_roles: false,
+          can_create_projects: true,
+          can_edit_projects: true,
+          can_delete_projects: false,
+          can_view_financials: true,
+          can_assign_tasks: true,
+          can_view_reports: true,
+          can_manage_contacts: true,
+          can_create_tasks: true,
+          can_edit_tasks: true,
+          can_delete_tasks: true,
+          read_projects: true,
+          can_send_messages: true
+        },
+        is_system_role: true
+      })
+      .select()
+      .single()
+
+    if (pmRoleError) {
+      console.error('Error creating project manager role:', pmRoleError)
+      throw pmRoleError
+    }
+
+    console.log(`Project Manager role created: ${pmRole.id}`)
+
     // 3. Create auth user with password using Admin API
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email: adminEmail.toLowerCase(),
@@ -201,7 +236,8 @@ serve(async (req) => {
         },
         roles: {
           adminRoleId: adminRole.id,
-          memberRoleId: memberRole.id
+          memberRoleId: memberRole.id,
+          pmRoleId: pmRole.id
         },
         message: `Organization "${orgName}" created successfully. Admin user ready to log in.`
       }),

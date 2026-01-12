@@ -28,7 +28,19 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
     const isEditMode = !!project;
     
     // Get all team members
-    const teamMembers = state.contacts.filter(c => c.type === 'Team');
+    const allTeamMembers = state.contacts.filter(c => c.type === 'Team');
+    
+    // Determine owner contact:
+    // - Edit mode: created_by_user_id from project
+    // - Create mode: current signed-in user's contact
+    const ownerContactId = isEditMode && project?.created_by_user_id
+      ? (state.profiles?.find(p => p.id === project.created_by_user_id)?.contact_id || null)
+      : (state.profiles?.find(p => p.id === state.user?.id)?.contact_id || null);
+    
+    // Filter out the owner from selectable team members (owner is always on the team)
+    const teamMembers = ownerContactId
+      ? allTeamMembers.filter(c => c.id !== ownerContactId)
+      : allTeamMembers;
 
     useEffect(() => {
         if (project) {
@@ -57,6 +69,11 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
 
     const handleSubmit = (e) => {
         e.preventDefault();
+        // Always ensure owner is part of the team without showing them in the selector
+        const ownerAugmentedContacts = ownerContactId && !selectedContacts.includes(ownerContactId)
+            ? [...selectedContacts, ownerContactId]
+            : selectedContacts;
+
         const projectData = {
             name,
             address,
@@ -64,7 +81,7 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
             status,
             due_date: due_date || null,
             next_milestone: next_milestone || null,
-            selectedContacts: selectedContacts,
+            selectedContacts: ownerAugmentedContacts,
             emailAddresses: emailAddresses
         };
         
@@ -340,6 +357,11 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                                         </div>
                                     </label>
                                 ))}
+                            </div>
+                        )}
+                        {isEditMode && ownerContactId && (
+                            <div className="mt-2 text-xs text-gray-500 italic">
+                                Note: The project owner is always on the team and cannot be removed.
                             </div>
                         )}
                         

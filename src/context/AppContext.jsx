@@ -217,13 +217,40 @@ function appReducer(state, action) {
       ...state, 
       contacts: state.contacts.filter(contact => contact.id !== action.payload) 
     };
-    case 'ADD_PROJECT_CONTACT': return { 
-      ...state, 
-      contacts: state.contacts.map(c => c.id === action.payload.contact_id 
-        ? { ...c, project_contacts: [...(Array.isArray(c.project_contacts) ? c.project_contacts : []), { project_id: action.payload.project_id }] } 
-        : c
-      ) 
-    };
+    case 'ADD_PROJECT_CONTACT': {
+      const contactId = action.payload.contact_id || action.payload.contact_id;
+      const projectId = action.payload.project_id || action.payload.project_id;
+      
+      // Check if contact exists in state
+      const contactExists = state.contacts.some(c => c.id === contactId);
+      
+      if (contactExists) {
+        // Update existing contact
+        return { 
+          ...state, 
+          contacts: state.contacts.map(c => {
+            if (c.id === contactId) {
+              const existingProjectContacts = Array.isArray(c.project_contacts) ? c.project_contacts : [];
+              const alreadyHasProject = existingProjectContacts.some(pc => 
+                String(pc.project_id) === String(projectId)
+              );
+              
+              if (!alreadyHasProject) {
+                return { 
+                  ...c, 
+                  project_contacts: [...existingProjectContacts, { project_id: projectId }] 
+                };
+              }
+            }
+            return c;
+          })
+        };
+      } else {
+        // Contact doesn't exist yet - fetch it
+        // This will be handled by the realtime subscription or manual refresh
+        return state;
+      }
+    }
     case 'REMOVE_PROJECT_CONTACT': return { 
       ...state, 
       contacts: state.contacts.map(c => c.id === action.payload.contact_id 
@@ -949,8 +976,22 @@ export const AppProvider = ({ children }) => {
       .subscribe();
 
     const projectContactsSubscription = supabaseClient.channel('public:project_contacts')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'project_contacts' }, (payload) => {
-        dispatch({ type: 'ADD_PROJECT_CONTACT', payload: payload.new });
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'project_contacts' }, async (payload) => {
+        // Always fetch the contact with its project_contacts to ensure we have the latest data
+        const { data: contact } = await supabaseClient
+          .from('contacts')
+          .select('*, project_contacts!fk_project_contacts_contact_id(project_id)')
+          .eq('id', payload.new.contact_id)
+          .single();
+        
+        if (contact) {
+          // ADD_CONTACT reducer handles duplicates by updating existing contacts
+          // This ensures the contact has the latest project_contacts relationship
+          dispatch({ type: 'ADD_CONTACT', payload: contact });
+        } else {
+          // Fallback: just update the project_contacts relationship for existing contact
+          dispatch({ type: 'ADD_PROJECT_CONTACT', payload: payload.new });
+        }
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'project_contacts' }, (payload) => {
         dispatch({ type: 'REMOVE_PROJECT_CONTACT', payload: payload.old });

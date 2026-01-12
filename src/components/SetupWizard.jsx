@@ -341,7 +341,7 @@ function SetupWizard({ show, onComplete }) {
                     onChange={(e) => setCreateUserData({ ...createUserData, password: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
                     required
-                    minLength={8}
+                    minLength={6}
                   />
                   <button
                     type="submit"

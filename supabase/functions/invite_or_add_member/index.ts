@@ -69,7 +69,26 @@ serve(async (req) => {
     
     console.log('Processing entries for project:', projectId)
 
+    // Get the project's organization_id (required for project_contacts)
+    const { data: projectData, error: projectError } = await supabaseAdmin
+      .from('projects')
+      .select('organization_id')
+      .eq('id', projectId)
+      .single()
+
+    if (projectError || !projectData?.organization_id) {
+      console.error('Error fetching project or missing organization_id:', projectError)
+      return new Response(
+        JSON.stringify({ error: 'Project not found or missing organization', details: projectError }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const organizationId = projectData.organization_id
+    console.log('Project organization_id:', organizationId)
+
     const results: Array<{ email: string; action: 'added' | 'invited' | 'skipped'; reason?: string }> = []
+    const emailsToSend: Array<{ from: string; to: string[]; subject: string; html: string }> = []
 
     for (const entry of entries as Entry[]) {
       const email = normalizeEmail(entry.email || '')
@@ -112,7 +131,8 @@ serve(async (req) => {
             type: mapContactType(role),
             role: role,
             status: 'Available',
-            created_by_user_id: addedByUserId || null
+            created_by_user_id: addedByUserId || null,
+            organization_id: organizationId
           }
           console.log('Contact data to insert:', contactData)
           
@@ -142,10 +162,10 @@ serve(async (req) => {
         }
 
         // Link to project via project_contacts (idempotent)
-        console.log('Linking contact to project:', { projectId, contactId, role })
+        console.log('Linking contact to project:', { projectId, contactId, role, organizationId })
         const { error: pcError } = await supabaseAdmin
           .from('project_contacts')
-          .insert({ project_id: projectId, contact_id: contactId, role })
+          .insert({ project_id: projectId, contact_id: contactId, role, organization_id: organizationId })
 
         if (pcError) {
           console.error('Error linking to project:', pcError)
@@ -178,8 +198,8 @@ serve(async (req) => {
             console.log('Sending notification email to:', email)
             const emailHtml = `
               <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
-                  <h1 style="color: white; margin: 0; font-size: 28px;">SiteWeave</h1>
+                <div style="background: #ffffff; padding: 32px 40px 24px 40px; border-radius: 10px 10px 0 0; text-align: center; border: 1px solid #e5e7eb; border-bottom: none;">
+                  <img src="https://app.siteweave.org/logo.svg" alt="SiteWeave" style="height: 80px; width: auto; margin: 0 auto; display: block;" />
                 </div>
                 <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
                   <h2 style="color: #1f2937; margin-top: 0;">You've been added to a project! 🎉</h2>
@@ -207,44 +227,23 @@ serve(async (req) => {
               </div>
             `
 
-            const resendResponse = await fetch('https://api.resend.com/emails', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${RESEND_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                from: 'SiteWeave <noreply@siteweave.org>',
-                to: [email],
-                subject: 'You\'ve been added to a project on SiteWeave',
-                html: emailHtml
-              })
+            // Add to batch email queue
+            emailsToSend.push({
+              from: 'SiteWeave <noreply@siteweave.org>',
+              to: [email],
+              subject: 'You\'ve been added to a project on SiteWeave',
+              html: emailHtml
             })
-
-            const resendData = await resendResponse.json()
-
-            if (resendResponse.ok) {
-              console.log('Email sent successfully to:', email, 'ID:', resendData.id)
-              emailSent = true
-            } else {
-              console.error('Resend API error response:', {
-                status: resendResponse.status,
-                statusText: resendResponse.statusText,
-                data: resendData
-              })
-            }
+            
+            console.log('Email prepared for batch sending to:', email)
+            results.push({ email, action: 'added' })
           } catch (emailError) {
-            console.error('Error sending email:', emailError)
+            console.error('Error preparing email:', emailError)
+            results.push({ email, action: 'added', reason: 'email_prep_failed' })
           }
         } else {
           console.log('RESEND_API_KEY not configured, skipping email')
-        }
-
-        // Add result based on email status
-        if (emailSent) {
-          results.push({ email, action: 'added' })
-        } else {
-          results.push({ email, action: 'added', reason: 'email_failed' })
+          results.push({ email, action: 'added', reason: 'email_not_configured' })
         }
       } catch (entryError) {
         console.error('Error processing entry:', entryError)
@@ -258,6 +257,42 @@ serve(async (req) => {
           action: 'skipped', 
           reason: `processing_error: ${entryError.message}` 
         })
+      }
+    }
+
+    // Send all emails in a single batch request
+    if (RESEND_API_KEY && emailsToSend.length > 0) {
+      try {
+        console.log(`Sending ${emailsToSend.length} emails in batch`)
+        const batchResponse = await fetch('https://api.resend.com/emails/batch', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(emailsToSend)
+        })
+
+        const batchData = await batchResponse.json()
+
+        if (batchResponse.ok) {
+          console.log('Batch emails sent successfully:', batchData)
+        } else {
+          console.error('Batch email error:', {
+            status: batchResponse.status,
+            statusText: batchResponse.statusText,
+            data: batchData
+          })
+          // Mark failed batch emails in results
+          emailsToSend.forEach((emailPayload) => {
+            const resultIndex = results.findIndex(r => r.email === emailPayload.to[0])
+            if (resultIndex !== -1 && results[resultIndex].action === 'added') {
+              results[resultIndex].reason = 'batch_email_failed'
+            }
+          })
+        }
+      } catch (batchError) {
+        console.error('Error sending batch emails:', batchError)
       }
     }
 

@@ -48,16 +48,53 @@ function InviteAcceptPage() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase
+      // First, get the invitation without joins to avoid RLS issues
+      const { data: invitationData, error: invitationError } = await supabase
         .from('invitations')
-        .select(`
-          *,
-          organizations (name),
-          roles!fk_invitations_role_id (name)
-        `)
+        .select('*')
         .eq('invitation_token', token)
         .eq('status', 'pending')
         .single();
+
+      if (invitationError) {
+        throw invitationError;
+      }
+
+      if (!invitationData) {
+        setError('Invalid or expired invitation link. Please ask your admin for a new one.');
+        setLoading(false);
+        return;
+      }
+
+      // Then fetch organization and role names separately if needed
+      let organizationName = null;
+      let roleName = null;
+
+      if (invitationData.organization_id) {
+        const { data: orgData } = await supabase
+          .from('organizations')
+          .select('name')
+          .eq('id', invitationData.organization_id)
+          .single();
+        organizationName = orgData?.name || null;
+      }
+
+      if (invitationData.role_id) {
+        const { data: roleData } = await supabase
+          .from('roles')
+          .select('name')
+          .eq('id', invitationData.role_id)
+          .single();
+        roleName = roleData?.name || null;
+      }
+
+      // Combine the data
+      const data = {
+        ...invitationData,
+        organizations: organizationName ? { name: organizationName } : null,
+        roles: roleName ? { name: roleName } : null
+      };
+      const error = null;
 
       console.log('Invitation query result:', { data: !!data, error: error?.message });
 
@@ -104,8 +141,8 @@ function InviteAcceptPage() {
       return;
     }
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters');
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
       return;
     }
 
@@ -159,9 +196,12 @@ function InviteAcceptPage() {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Step 2: Ensure contact exists and is linked to profile
+      // Wait a bit more for profile trigger to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
       const { data: profile } = await supabase
         .from('profiles')
-        .select('contact_id')
+        .select('contact_id, organization_id')
         .eq('id', authData.user.id)
         .maybeSingle();
 
@@ -171,16 +211,17 @@ function InviteAcceptPage() {
         // Check if contact exists with this email in the organization
         const { data: existingContact } = await supabase
           .from('contacts')
-          .select('id')
+          .select('id, email, name')
           .ilike('email', invitation.email)
           .eq('organization_id', invitation.organization_id)
           .maybeSingle();
 
         if (existingContact) {
           contactId = existingContact.id;
+          console.log('Found existing contact:', contactId);
         } else {
           // Create new contact using edge function to bypass RLS
-          // This is needed because the user might not have a session yet
+          console.log('Creating new contact via edge function...');
           const { data: contactResult, error: contactError } = await supabase.functions.invoke('create-contact-for-invitation', {
             body: {
               userId: authData.user.id,
@@ -192,19 +233,11 @@ function InviteAcceptPage() {
 
           if (contactError) {
             console.error('Error calling create-contact-for-invitation:', contactError);
-            // Try to get more details from the error
-            const errorMessage = contactError.message || 'Failed to create contact';
-            const errorDetails = contactError.context || contactError;
-            console.error('Error details:', errorDetails);
-            throw new Error(`${errorMessage}. Check Supabase function logs for details.`);
+            throw new Error(`Failed to create contact: ${contactError.message}`);
           }
 
-          if (!contactResult) {
-            throw new Error('Failed to create contact: No response from server');
-          }
-
-          if (!contactResult.success) {
-            const errorMsg = contactResult.error || 'Unknown error';
+          if (!contactResult || !contactResult.success) {
+            const errorMsg = contactResult?.error || 'Unknown error';
             console.error('Function returned error:', contactResult);
             throw new Error(`Failed to create contact: ${errorMsg}`);
           }
@@ -214,21 +247,45 @@ function InviteAcceptPage() {
           }
 
           contactId = contactResult.contactId;
+          console.log('Contact created successfully:', contactId);
         }
-
-        // Link contact to profile - use edge function if no session, otherwise direct update
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (sessionData?.session) {
-          await supabase
-            .from('profiles')
-            .update({ contact_id: contactId })
-            .eq('id', authData.user.id);
-        } else {
-          // If no session, the profile update will happen when user signs in
-          // The contact is already created, so we can proceed
-          console.log('No session available, contact created via edge function. Profile will be updated on first login.');
-        }
+      } else {
+        console.log('Contact already linked to profile:', contactId);
       }
+
+        // Verify contact exists and has email/name
+        if (contactId) {
+          const { data: contactVerify } = await supabase
+            .from('contacts')
+            .select('id, email, name, organization_id')
+            .eq('id', contactId)
+            .single();
+          
+          if (!contactVerify) {
+            console.error('Contact not found after creation:', contactId);
+            throw new Error('Contact was created but cannot be found. Please contact support.');
+          }
+          
+          // Ensure contact has email and name
+          const updates = {};
+          if (!contactVerify.email) {
+            updates.email = invitation.email.toLowerCase();
+          }
+          const userName = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
+          if (!contactVerify.name || contactVerify.name === 'User' || contactVerify.name === 'Unnamed User') {
+            updates.name = userName;
+          }
+          
+          if (Object.keys(updates).length > 0) {
+            console.log('Updating contact with missing fields:', updates);
+            await supabase
+              .from('contacts')
+              .update(updates)
+              .eq('id', contactId);
+          }
+          
+          console.log('Contact verified:', { id: contactVerify.id, email: contactVerify.email || updates.email, name: contactVerify.name || updates.name });
+        }
 
       // Step 3: Update profile with organization and mark invitation as accepted
       // Do this BEFORE sign-in attempt so organization is assigned even if sign-in fails
@@ -329,6 +386,35 @@ function InviteAcceptPage() {
 
       // Step 5: Ensure profile is updated with organization (now that we have a session)
       if (session) {
+        // Verify contact one more time before updating profile
+        if (!contactId) {
+          const { data: contactCheck } = await supabase
+            .from('contacts')
+            .select('id')
+            .ilike('email', invitation.email)
+            .eq('organization_id', invitation.organization_id)
+            .maybeSingle();
+          
+          if (contactCheck) {
+            contactId = contactCheck.id;
+            console.log('Found contact on retry:', contactId);
+          } else {
+            console.error('Contact still not found, creating via edge function...');
+            const { data: contactResult } = await supabase.functions.invoke('create-contact-for-invitation', {
+              body: {
+                userId: authData.user.id,
+                email: invitation.email,
+                name: authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User',
+                organizationId: invitation.organization_id
+              }
+            });
+            
+            if (contactResult?.success && contactResult.contactId) {
+              contactId = contactResult.contactId;
+            }
+          }
+        }
+
         const { error: profileError } = await supabase
           .from('profiles')
           .update({
@@ -341,6 +427,48 @@ function InviteAcceptPage() {
         if (profileError) {
           console.error('Error updating profile after sign-in:', profileError);
           throw new Error(`Failed to assign organization: ${profileError.message}`);
+        }
+
+        // Verify the update worked and contact is properly linked
+        const { data: updatedProfile } = await supabase
+          .from('profiles')
+          .select('organization_id, role_id, contact_id, contacts(id, email, name)')
+          .eq('id', authData.user.id)
+          .single();
+        
+        console.log('Profile updated:', updatedProfile);
+        
+        // Final verification - ensure contact exists and has email
+        if (updatedProfile?.contact_id) {
+          const { data: finalContact } = await supabase
+            .from('contacts')
+            .select('id, email, name, organization_id')
+            .eq('id', updatedProfile.contact_id)
+            .single();
+          
+          if (finalContact) {
+            console.log('Final contact verification:', finalContact);
+            // One more update to ensure email and name are set
+            const finalUpdates = {};
+            if (!finalContact.email) {
+              finalUpdates.email = invitation.email.toLowerCase();
+            }
+            if (!finalContact.name || finalContact.name === 'User' || finalContact.name === 'Unnamed User') {
+              finalUpdates.name = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
+            }
+            
+            if (Object.keys(finalUpdates).length > 0) {
+              console.log('Final contact update:', finalUpdates);
+              await supabase
+                .from('contacts')
+                .update(finalUpdates)
+                .eq('id', updatedProfile.contact_id);
+            }
+          } else {
+            console.error('Contact not found in final verification:', updatedProfile.contact_id);
+          }
+        } else {
+          console.error('Profile missing contact_id after update');
         }
 
         // Ensure invitation is marked as accepted
@@ -487,10 +615,10 @@ function InviteAcceptPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 8 characters"
+              placeholder="At least 6 characters"
               className="w-full px-3 py-2 text-sm sm:text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
               required
-              minLength={8}
+              minLength={6}
               disabled={accepting}
               autoComplete="new-password"
             />
@@ -507,7 +635,7 @@ function InviteAcceptPage() {
               placeholder="Re-enter your password"
               className="w-full px-3 py-2 text-sm sm:text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
               required
-              minLength={8}
+              minLength={6}
               disabled={accepting}
               autoComplete="new-password"
             />

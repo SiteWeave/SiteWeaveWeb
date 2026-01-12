@@ -44,7 +44,7 @@ supabase functions logs team-invite --limit 10
 **You (Consultant)**:
 1. Open `CREATE-ORGANIZATION-TOOL.html` or navigate to `/admin/super`
 2. Enter client information:
-   - **Company Name**: [Client's company name]
+   - **Company Name**: [Client's company name
    - **Owner Name**: [Owner's full name]
    - **Owner Email**: [Owner's email]
    - **Admin Password**: [Temporary password - tell them to change it]

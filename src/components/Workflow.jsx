@@ -12,15 +12,52 @@ const Workflow = ({ projectId }) => {
     const [isCreating, setIsCreating] = useState(false);
     const [expandedWorkflow, setExpandedWorkflow] = useState(null);
 
-    // Get project team members
-    const projectTeamMembers = state.contacts.filter(contact => {
-        const hasProjectAccess = contact.project_contacts?.some(pc => 
-            pc.project_id === projectId || 
-            pc.project_id === String(projectId) || 
-            String(pc.project_id) === String(projectId)
-        );
-        return hasProjectAccess && contact.type === 'Team';
-    });
+    // Get project data to check creator and manager
+    const project = state.projects?.find(p => p.id === projectId);
+    
+    // Get project team members:
+    // 1. Contacts explicitly added via project_contacts
+    // 2. Project creator (if they have a contact_id)
+    // 3. Project manager (if they have a contact_id)
+    const projectContactIds = new Set(
+        state.contacts
+            .filter(contact => {
+                const hasProjectAccess = contact.project_contacts?.some(pc => 
+                    pc.project_id === projectId || 
+                    pc.project_id === String(projectId) || 
+                    String(pc.project_id) === String(projectId)
+                );
+                return hasProjectAccess && contact.type === 'Team';
+            })
+            .map(contact => contact.id)
+    );
+    
+    // Add creator if they have a contact and aren't already in the list
+    if (project?.created_by_user_id) {
+        const creatorProfile = state.profiles?.find(p => p.id === project.created_by_user_id);
+        if (creatorProfile?.contact_id) {
+            const creatorContact = state.contacts.find(c => c.id === creatorProfile.contact_id && c.type === 'Team');
+            if (creatorContact && !projectContactIds.has(creatorContact.id)) {
+                projectContactIds.add(creatorContact.id);
+            }
+        }
+    }
+    
+    // Add manager if they have a contact and aren't already in the list
+    if (project?.project_manager_id) {
+        const managerProfile = state.profiles?.find(p => p.id === project.project_manager_id);
+        if (managerProfile?.contact_id) {
+            const managerContact = state.contacts.find(c => c.id === managerProfile.contact_id && c.type === 'Team');
+            if (managerContact && !projectContactIds.has(managerContact.id)) {
+                projectContactIds.add(managerContact.id);
+            }
+        }
+    }
+    
+    // Get final team members list
+    const projectTeamMembers = state.contacts.filter(contact => 
+        projectContactIds.has(contact.id) && contact.type === 'Team'
+    );
 
     // Form state for creating new workflow
     const [newWorkflow, setNewWorkflow] = useState({

@@ -73,7 +73,7 @@ function WeatherWidget({ compact = false }) {
       if (!currentWeather) {
         // Fall back to saved city or default
         const savedLocation = localStorage.getItem(STORAGE_KEY);
-        const fallbackCity = savedLocation || 'New York';
+        const fallbackCity = savedLocation || 'Austin';
         await loadWeatherByCity(fallbackCity);
         return;
       }
@@ -86,7 +86,7 @@ function WeatherWidget({ compact = false }) {
       console.error('Error loading weather:', err);
       // If geolocation fails, try saved location preference first, then default city
       const savedLocation = localStorage.getItem(STORAGE_KEY);
-      const fallbackCity = savedLocation || 'New York';
+      const fallbackCity = savedLocation || 'Austin';
       console.log('Geolocation failed, falling back to:', fallbackCity);
       try {
         await loadWeatherByCity(fallbackCity);
@@ -190,7 +190,7 @@ function WeatherWidget({ compact = false }) {
             type="text"
             value={cityInput}
             onChange={(e) => setCityInput(e.target.value)}
-            placeholder="Enter city name (e.g., New York)"
+            placeholder="Enter city name (e.g., Austin)"
             className="w-full px-3 pr-10 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
             autoFocus
           />
@@ -295,7 +295,7 @@ function WeatherWidget({ compact = false }) {
                 type="text"
                 value={cityInput}
                 onChange={(e) => setCityInput(e.target.value)}
-                placeholder="Enter city name (e.g., New York)"
+                placeholder="Enter city name (e.g., Austin)"
                 className="w-full px-2 pr-8 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                 autoFocus
               />
@@ -362,7 +362,7 @@ function WeatherWidget({ compact = false }) {
               type="text"
               value={cityInput}
               onChange={(e) => setCityInput(e.target.value)}
-              placeholder="Enter city name (e.g., New York)"
+              placeholder="Enter city name (e.g., Austin)"
               className="w-full px-2 pr-8 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <button

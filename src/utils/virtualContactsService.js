@@ -3,6 +3,7 @@
  * Implements the "Corporate Directory" model:
  * - Group A (Internal): All users where organization_id matches current_user.organization_id
  * - Group B (External/Guests): All users who are project_collaborators on the same projects as the current user
+ * - Group C (Project Contacts): All contacts directly assigned to projects via project_contacts table
  * 
  * Privacy Guard: Guest users can only see Group B (people on their projects), not Group A
  */
@@ -30,7 +31,7 @@ export async function isGuestUser(supabase, userId) {
 }
 
 /**
- * Get virtual contacts (Organization Directory + Project Collaborators)
+ * Get virtual contacts (Organization Directory + Project Collaborators + Project Contacts)
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
  * @param {string} userId - Current user ID
  * @param {string} organizationId - Current user's organization ID (null for guests)
@@ -40,8 +41,7 @@ export async function isGuestUser(supabase, userId) {
 export async function getVirtualContacts(supabase, userId, organizationId, userProjectIds = []) {
   try {
     const isGuest = !organizationId;
-    const contacts = [];
-    const contactMap = new Map(); // Use Map to deduplicate by user ID
+    const contactMap = new Map(); // Use Map to deduplicate by contact ID
 
     // Group A: Organization Members (only if user is NOT a guest)
     if (!isGuest && organizationId) {
@@ -92,9 +92,9 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
               role_id: member.roles?.id,
               role_name: member.roles?.name,
               is_internal: true,
-              project_contacts: [] // Will be populated separately if needed
+              project_contacts: [] // Will be populated below
             };
-            contactMap.set(member.id, contact);
+            contactMap.set(member.contacts.id, contact);
           }
         });
       }
@@ -102,9 +102,6 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
 
     // Group B: Project Collaborators (users on same projects as current user)
     if (userProjectIds.length > 0) {
-      // Query project_collaborators and then fetch profiles separately
-      // This avoids the foreign key relationship issue since project_collaborators.user_id
-      // references auth.users(id), not profiles directly
       const { data: collaboratorsData, error: collabError } = await supabase
         .from('project_collaborators')
         .select('user_id, project_id, access_level')
@@ -113,10 +110,8 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
       if (collabError) {
         console.error('Error fetching project collaborators:', collabError);
       } else if (collaboratorsData && collaboratorsData.length > 0) {
-        // Get unique user IDs
         const userIds = [...new Set(collaboratorsData.map(c => c.user_id))];
         
-        // Fetch profiles with contacts and roles for these users
         const { data: profilesData, error: profilesError } = await supabase
           .from('profiles')
           .select(`
@@ -145,23 +140,14 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
         if (profilesError) {
           console.error('Error fetching collaborator profiles:', profilesError);
         } else if (profilesData) {
-          // Create a map of user_id to profile
           const profileMap = new Map(profilesData.map(p => [p.id, p]));
           
-          // Combine collaborators with their profiles
-          const collaborators = collaboratorsData.map(collab => ({
-            ...collab,
-            profiles: profileMap.get(collab.user_id)
-          }));
-
-          // Process collaborators
-          collaborators.forEach(collab => {
-            const profile = collab.profiles;
+          collaboratorsData.forEach(collab => {
+            const profile = profileMap.get(collab.user_id);
             if (profile && profile.contacts) {
-              const existingContact = contactMap.get(profile.id);
+              const existingContact = contactMap.get(profile.contacts.id);
               
               if (existingContact) {
-                // User already in map (internal member), just add project_contact
                 if (!existingContact.project_contacts) {
                   existingContact.project_contacts = [];
                 }
@@ -170,7 +156,6 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
                   access_level: collab.access_level
                 });
               } else {
-                // New external/guest contact
                 const contact = {
                   id: profile.contacts.id,
                   name: profile.contacts.name,
@@ -193,7 +178,7 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
                     access_level: collab.access_level
                   }]
                 };
-                contactMap.set(profile.id, contact);
+                contactMap.set(profile.contacts.id, contact);
               }
             }
           });
@@ -201,8 +186,85 @@ export async function getVirtualContacts(supabase, userId, organizationId, userP
       }
     }
 
+    // Group C: Contacts from project_contacts table (CRITICAL for invite_or_add_member)
+    // This ensures ALL contacts assigned to projects are loaded, even if they don't have profiles yet
+    if (organizationId) {
+      const { data: projectContactsData, error: pcError } = await supabase
+        .from('project_contacts')
+        .select(`
+          project_id,
+          contact_id,
+          role,
+          contacts (
+            id,
+            name,
+            email,
+            role,
+            phone,
+            avatar_url,
+            status,
+            type,
+            company,
+            trade,
+            organization_id
+          )
+        `)
+        .eq('organization_id', organizationId);
+
+      if (pcError) {
+        console.error('Error fetching project_contacts:', pcError);
+      } else if (projectContactsData) {
+        console.log('Loaded project_contacts:', projectContactsData.length);
+        projectContactsData.forEach(pc => {
+          if (pc.contacts) {
+            const existingContact = contactMap.get(pc.contacts.id);
+            
+            if (existingContact) {
+              // Contact already exists - add project_contact relationship
+              if (!existingContact.project_contacts) {
+                existingContact.project_contacts = [];
+              }
+              // Check if this project is already in the list
+              const hasProject = existingContact.project_contacts.some(
+                p => String(p.project_id) === String(pc.project_id)
+              );
+              if (!hasProject) {
+                existingContact.project_contacts.push({
+                  project_id: pc.project_id,
+                  role: pc.role
+                });
+              }
+            } else {
+              // New contact from project_contacts - add it
+              const contact = {
+                id: pc.contacts.id,
+                name: pc.contacts.name,
+                email: pc.contacts.email,
+                role: pc.contacts.role,
+                phone: pc.contacts.phone,
+                avatar_url: pc.contacts.avatar_url,
+                status: pc.contacts.status || 'Available',
+                type: pc.contacts.type || 'Team',
+                company: pc.contacts.company,
+                trade: pc.contacts.trade,
+                organization_id: pc.contacts.organization_id,
+                is_internal: pc.contacts.organization_id === organizationId,
+                project_contacts: [{
+                  project_id: pc.project_id,
+                  role: pc.role
+                }]
+              };
+              contactMap.set(pc.contacts.id, contact);
+            }
+          }
+        });
+      }
+    }
+
     // Convert Map to Array
-    return Array.from(contactMap.values());
+    const result = Array.from(contactMap.values());
+    console.log('Total virtual contacts loaded:', result.length);
+    return result;
   } catch (error) {
     console.error('Error fetching virtual contacts:', error);
     return [];
