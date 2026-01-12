@@ -222,11 +222,13 @@ function InviteAcceptPage() {
         } else {
           // Create new contact using edge function to bypass RLS
           console.log('Creating new contact via edge function...');
+          // Priority: invitation metadata name > user metadata > email prefix
+          const invitedName = invitation.metadata?.first_name || invitation.metadata?.name || authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User';
           const { data: contactResult, error: contactError } = await supabase.functions.invoke('create-contact-for-invitation', {
             body: {
               userId: authData.user.id,
               email: invitation.email,
-              name: authData.user.user_metadata?.full_name || invitation.email.split('@')[0] || 'User',
+              name: invitedName,
               organizationId: invitation.organization_id
             }
           });
@@ -271,8 +273,15 @@ function InviteAcceptPage() {
           if (!contactVerify.email) {
             updates.email = invitation.email.toLowerCase();
           }
-          const userName = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
-          if (!contactVerify.name || contactVerify.name === 'User' || contactVerify.name === 'Unnamed User') {
+          // Priority: invitation metadata name > existing contact name > user metadata > email prefix
+          const invitedName = invitation.metadata?.first_name || invitation.metadata?.name;
+          const userName = invitedName || authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
+          // Update name if it's missing, generic, or if we have a better name from the invitation
+          const isGenericName = !contactVerify.name || contactVerify.name === 'User' || contactVerify.name === 'Unnamed User' || contactVerify.name === invitation.email.split('@')[0];
+          if (isGenericName && invitedName) {
+            updates.name = invitedName;
+            console.log('Updating contact name from invitation metadata:', invitedName);
+          } else if (!contactVerify.name || contactVerify.name === 'User' || contactVerify.name === 'Unnamed User') {
             updates.name = userName;
           }
           // CRITICAL: Ensure contact has organization_id set
@@ -502,7 +511,13 @@ function InviteAcceptPage() {
             if (!finalContact.email) {
               finalUpdates.email = invitation.email.toLowerCase();
             }
-            if (!finalContact.name || finalContact.name === 'User' || finalContact.name === 'Unnamed User') {
+            // Priority: invitation metadata name > existing contact name > user metadata > email prefix
+            const invitedNameFinal = invitation.metadata?.first_name || invitation.metadata?.name;
+            const isGenericNameFinal = !finalContact.name || finalContact.name === 'User' || finalContact.name === 'Unnamed User' || finalContact.name === invitation.email.split('@')[0];
+            if (isGenericNameFinal && invitedNameFinal) {
+              finalUpdates.name = invitedNameFinal;
+              console.log('Updating final contact name from invitation metadata:', invitedNameFinal);
+            } else if (!finalContact.name || finalContact.name === 'User' || finalContact.name === 'Unnamed User') {
               finalUpdates.name = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || invitation.email.split('@')[0] || 'User';
             }
             // CRITICAL: Ensure contact has organization_id set
