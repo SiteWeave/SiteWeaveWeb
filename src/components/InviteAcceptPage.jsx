@@ -537,7 +537,7 @@ function InviteAcceptPage() {
         }
 
         // Ensure invitation is marked as accepted
-        const { error: finalUpdateError } = await supabase
+        const { error: invitationUpdateError } = await supabase
           .from('invitations')
           .update({
             status: 'accepted',
@@ -545,8 +545,8 @@ function InviteAcceptPage() {
           })
           .eq('id', invitation.id);
 
-        if (finalUpdateError) {
-          console.error('Error updating invitation status:', finalUpdateError);
+        if (invitationUpdateError) {
+          console.error('Error updating invitation status:', invitationUpdateError);
           // Don't throw - organization assignment succeeded
         }
       } else {
