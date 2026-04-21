@@ -73,11 +73,11 @@ function MiniCalendar({ currentDate, setCurrentDate }) {
     const handleNextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
 
     return (
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
+        <div className="app-card p-4 rounded-xl">
             <div className="flex justify-between items-center mb-4">
-                <button onClick={handlePrevMonth} className="p-1 rounded-full hover:bg-gray-100">&lt;</button>
+                <button type="button" onClick={handlePrevMonth} className="p-1 rounded-full hover:bg-slate-100">&lt;</button>
                 <span className="font-semibold text-sm">{currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
-                <button onClick={handleNextMonth} className="p-1 rounded-full hover:bg-gray-100">&gt;</button>
+                <button type="button" onClick={handleNextMonth} className="p-1 rounded-full hover:bg-slate-100">&gt;</button>
             </div>
             <div className="grid grid-cols-7 text-center text-xs text-gray-500 mb-2">
                 {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <div key={`day-${index}`}>{day}</div>)}
@@ -948,7 +948,7 @@ function CalendarView() {
         <>
             <div className="flex h-full gap-8">
                 {/* Left Sidebar */}
-                <aside className="w-64 flex-shrink-0">
+                <aside className="w-64 shrink-0">
                     <MiniCalendar currentDate={currentDate} setCurrentDate={setCurrentDate} />
                     
                     {/* Calendar Actions */}
@@ -993,7 +993,7 @@ function CalendarView() {
                                             className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                         />
                                         <div 
-                                            className="w-3 h-3 rounded flex-shrink-0" 
+                                            className="w-3 h-3 rounded shrink-0" 
                                             style={{backgroundColor: category.color}}
                                         ></div>
                                         <span className={`text-gray-600 flex-1 ${!isVisible ? 'opacity-50 line-through' : ''}`}>
@@ -1009,23 +1009,25 @@ function CalendarView() {
                 {/* Main Calendar */}
                 <main 
                     data-onboarding="calendar-container"
-                    className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden"
+                    className="flex-1 app-card overflow-hidden"
                 >
                     {/* Outlook-style Header */}
-                    <div className="bg-white border-b border-gray-200 px-6 py-4">
+                    <div className="bg-white/90 border-b border-slate-200 px-6 py-4">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center space-x-4">
-                                <h1 className="text-2xl font-semibold text-gray-900">Calendar</h1>
+                                <h1 className="text-2xl font-semibold text-slate-900">Calendar</h1>
                                 <div className="flex items-center space-x-2">
                                     <button
+                                        type="button"
                                         onClick={() => setShowModal(true)}
-                                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                                        className="px-4 py-2 app-action-primary rounded-lg transition-colors text-sm font-medium"
                                     >
                                         + New Event
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => setShowCategoryManager(true)}
-                                        className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
+                                        className="px-4 py-2 app-action-secondary rounded-lg transition-colors text-sm font-medium"
                                     >
                                         Manage Categories
                                     </button>
@@ -1033,7 +1035,7 @@ function CalendarView() {
                             </div>
                             <div className="flex items-center space-x-4">
                                 {/* Weather Widget */}
-                                <div className="flex-shrink-0 relative">
+                                <div className="shrink-0 relative">
                                     <WeatherWidget compact={true} />
                                 </div>
                                 <div className="flex items-center bg-gray-100 rounded-lg p-1">
@@ -1041,7 +1043,7 @@ function CalendarView() {
                                         onClick={() => handleViewChange('timeGridDay')}
                                         className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
                                             currentView === 'timeGridDay' 
-                                                ? 'bg-white text-gray-900 shadow-sm' 
+                                                ? 'bg-white text-gray-900 shadow-xs' 
                                                 : 'text-gray-700 hover:bg-white hover:text-gray-900'
                                         }`}
                                     >
@@ -1051,7 +1053,7 @@ function CalendarView() {
                                         onClick={() => handleViewChange('timeGridWeek')}
                                         className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
                                             currentView === 'timeGridWeek' 
-                                                ? 'bg-white text-gray-900 shadow-sm' 
+                                                ? 'bg-white text-gray-900 shadow-xs' 
                                                 : 'text-gray-700 hover:bg-white hover:text-gray-900'
                                         }`}
                                     >
@@ -1061,7 +1063,7 @@ function CalendarView() {
                                         onClick={() => handleViewChange('dayGridMonth')}
                                         className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
                                             currentView === 'dayGridMonth' 
-                                                ? 'bg-white text-gray-900 shadow-sm' 
+                                                ? 'bg-white text-gray-900 shadow-xs' 
                                                 : 'text-gray-700 hover:bg-white hover:text-gray-900'
                                         }`}
                                     >

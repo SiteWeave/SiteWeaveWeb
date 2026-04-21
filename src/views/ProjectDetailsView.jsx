@@ -1,22 +1,44 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
+import {
+    attachTaskPhotoUrls,
+    deleteTaskPhoto,
+    fetchTaskPhotos,
+    listWeatherImpactsForProject,
+    reorderTaskPhotos,
+    updateTaskPhoto,
+    uploadTaskPhotoSet,
+} from '@siteweave/core-logic';
 import TaskItem from '../components/TaskItem';
 import TaskModal from '../components/TaskModal';
+import TaskPhotosModal from '../components/TaskPhotosModal';
+import PhaseTaskSection from '../components/PhaseTaskSection';
 import ProjectSidebar from '../components/ProjectSidebar';
+import ProjectModal from '../components/ProjectModal';
 import ShareModal from '../components/ShareModal';
+import SaveAsTemplateModal from '../components/SaveAsTemplateModal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import TaskBulkActions from '../components/TaskBulkActions';
 import FieldIssues from '../components/FieldIssues';
-import Workflow from '../components/Workflow';
 import Avatar from '../components/Avatar';
 import PermissionGuard from '../components/PermissionGuard';
+import ActivityHistoryPanel from '../components/ActivityHistoryPanel';
+import WeatherImpactModal from '../components/WeatherImpactModal';
+import WeatherDelayMarker from '../components/WeatherDelayMarker';
+import { mergeWeatherIntoPhaseTasks } from '../utils/weatherTaskTimeline';
 import { useTaskShortcuts } from '../hooks/useKeyboardShortcuts';
 import { handleApiError, createOptimisticUpdate } from '../utils/errorHandling';
 import { parseRecurrence } from '../utils/recurrenceService';
 import { logTaskCreated, logTaskCompleted, logTaskUncompleted, logTaskUpdated, logTaskDeleted } from '../utils/activityLogger';
+import { getCriticalPathTaskIds } from '../utils/criticalPath';
+import { orderTasksForGantt } from '../utils/ganttOrdering';
+import { buildTaskPhotoDraft, canManageTaskPhotos, revokeTaskPhotoDraftUrls, sortTaskPhotos } from '../utils/taskPhotoUtils';
+import GanttChart from '../components/GanttChart';
+import ProgressReportModal from '../components/ProgressReportModal';
+import MsProjectImportModal from '../components/MsProjectImportModal';
 
-function ProjectDetailsView() {
+function ProjectDetailsView({ routeTab = 'tasks', onTabChange = null }) {
     const { state, dispatch } = useAppContext();
     const { addToast } = useToast();
     const [showTaskModal, setShowTaskModal] = useState(false);
@@ -26,9 +48,122 @@ function ProjectDetailsView() {
     const [selectedTasks, setSelectedTasks] = useState([]);
     const [taskFilter, setTaskFilter] = useState('all'); // all, completed, pending
     const [taskSort, setTaskSort] = useState('due_date'); // due_date, priority
-    const [activeTab, setActiveTab] = useState('tasks'); // tasks, fieldIssues
+    const [activeTab, setActiveTab] = useState('tasks'); // tasks, gantt, fieldIssues, activity
     const [showShare, setShowShare] = useState(false);
+    const [showProgressReportModal, setShowProgressReportModal] = useState(false);
+    const [showMsProjectImportModal, setShowMsProjectImportModal] = useState(false);
+    const [showWeatherImpactModal, setShowWeatherImpactModal] = useState(false);
+    const [selectedWeatherImpact, setSelectedWeatherImpact] = useState(null);
+    const [projectRefreshNonce, setProjectRefreshNonce] = useState(0);
+    const [weatherImpacts, setWeatherImpacts] = useState([]);
+    const [taskDependencies, setTaskDependencies] = useState([]);
+    const [projectDependencyMode, setProjectDependencyMode] = useState('auto');
+    const [showSaveAsTemplateModal, setShowSaveAsTemplateModal] = useState(false);
+    const [showProjectModal, setShowProjectModal] = useState(false);
+    const [isSavingProject, setIsSavingProject] = useState(false);
+    const [projectPhases, setProjectPhases] = useState([]);
     const [fieldIssuesCount, setFieldIssuesCount] = useState(0);
+    const [photoModalTaskId, setPhotoModalTaskId] = useState(null);
+    const [photoActionTaskIds, setPhotoActionTaskIds] = useState({});
+    const [taskPhotoUploadProgress, setTaskPhotoUploadProgress] = useState(null);
+    const [ganttTasks, setGanttTasks] = useState([]);
+    const [ganttDependencies, setGanttDependencies] = useState([]);
+    const [ganttCriticalCount, setGanttCriticalCount] = useState(0);
+    const [ganttCriticalIds, setGanttCriticalIds] = useState([]);
+    const [showCriticalPath, setShowCriticalPath] = useState(true);
+    const [projectTasksList, setProjectTasksList] = useState([]);
+
+    const project = state.projects.find((p) => p.id === state.selectedProjectId);
+    const allTasksFromState = (state.tasks || []).filter((t) => t.project_id === state.selectedProjectId);
+    const allTasks = projectTasksList.length > 0 ? projectTasksList : allTasksFromState;
+    const allTaskIdsKey = useMemo(
+        () => allTasks.map((task) => task.id).sort().join('|'),
+        [allTasks]
+    );
+
+    const routeToTabMap = {
+        tasks: 'tasks',
+        gantt: 'gantt',
+        'field-issues': 'fieldIssues',
+        fieldIssues: 'fieldIssues',
+        activity: 'activity'
+    };
+    const tabToRouteMap = {
+        tasks: 'tasks',
+        gantt: 'gantt',
+        fieldIssues: 'field-issues',
+        activity: 'activity'
+    };
+    const setTabAndRoute = (nextTab) => {
+        setActiveTab(nextTab);
+        if (onTabChange) {
+            const nextRouteTab = tabToRouteMap[nextTab] || 'tasks';
+            onTabChange(nextRouteTab);
+        }
+    };
+
+    useEffect(() => {
+        const mapped = routeToTabMap[routeTab] || 'tasks';
+        setActiveTab(mapped);
+    }, [routeTab]);
+
+    useEffect(() => {
+        setProjectDependencyMode(project?.dependency_scheduling_mode || 'auto');
+    }, [project?.dependency_scheduling_mode]);
+
+    useEffect(() => {
+        if (!state.selectedProjectId) {
+            setProjectPhases([]);
+            return;
+        }
+        const ac = new AbortController();
+        (async () => {
+            const { data, error } = await supabaseClient
+                .from('project_phases')
+                .select('*')
+                .eq('project_id', state.selectedProjectId)
+                .order('order', { ascending: true });
+            if (ac.signal.aborted) return;
+            if (error) {
+                console.error('Error loading project phases:', error);
+                setProjectPhases([]);
+            } else {
+                setProjectPhases(data || []);
+            }
+        })();
+        return () => ac.abort();
+    }, [state.selectedProjectId, projectRefreshNonce]);
+
+    useEffect(() => {
+        if (!state.selectedProjectId) {
+            setWeatherImpacts([]);
+            return;
+        }
+        const ac = new AbortController();
+        (async () => {
+            try {
+                const rows = await listWeatherImpactsForProject(
+                    supabaseClient,
+                    state.selectedProjectId,
+                    state.currentOrganization?.id || null,
+                );
+                if (!ac.signal.aborted) setWeatherImpacts(rows || []);
+            } catch (e) {
+                if (!ac.signal.aborted) {
+                    console.error('Error loading weather impacts:', e);
+                    setWeatherImpacts([]);
+                }
+            }
+        })();
+        return () => ac.abort();
+    }, [state.selectedProjectId, state.currentOrganization?.id, projectRefreshNonce]);
+
+    const canViewActivityHistory = state.userRole?.permissions?.can_view_activity_history === true;
+    useEffect(() => {
+        if (!canViewActivityHistory && activeTab === 'activity') {
+            setTabAndRoute('tasks');
+        }
+    }, [canViewActivityHistory, activeTab]);
 
     // Keyboard shortcuts
     useTaskShortcuts({
@@ -42,37 +177,128 @@ function ProjectDetailsView() {
         filterTasks: (filter) => setTaskFilter(filter)
     });
 
-    // Fetch field issues count
+    // Fetch project tasks and field issues count in parallel (avoids waterfall)
     useEffect(() => {
-        const fetchFieldIssuesCount = async () => {
-            if (!state.selectedProjectId) {
-                setFieldIssuesCount(0);
+        if (!state.selectedProjectId) {
+            setProjectTasksList([]);
+            setFieldIssuesCount(0);
+            return;
+        }
+        setProjectTasksList([]);
+        const ac = new AbortController();
+        (async () => {
+            try {
+                const [tasksResult, fieldIssuesResult] = await Promise.all([
+                    supabaseClient
+                        .from('tasks')
+                        .select('*, contacts!fk_tasks_assignee_id(name, avatar_url), task_photos(*)')
+                        .eq('project_id', state.selectedProjectId)
+                        .order('due_date', { ascending: true, nullsFirst: false })
+                        .order('id', { ascending: true }),
+                    supabaseClient
+                        .from('project_issues')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('project_id', state.selectedProjectId)
+                ]);
+                if (ac.signal.aborted) return;
+                const { data: tasks, error } = tasksResult;
+                if (error) {
+                    console.error('Error loading project tasks:', error);
+                    return;
+                }
+                const list = tasks || [];
+                if (!ac.signal.aborted) {
+                    setProjectTasksList(list);
+                    setFieldIssuesCount(fieldIssuesResult.count ?? 0);
+                }
+                const otherTasks = (state.tasks || []).filter(
+                  (t) => String(t.project_id) !== String(state.selectedProjectId),
+                );
+                dispatch({ type: 'SET_TASKS', payload: [...otherTasks, ...list] });
+            } catch (e) {
+                if (!ac.signal.aborted) console.error('Error loading project tasks:', e);
+            }
+        })();
+        return () => ac.abort();
+    }, [state.selectedProjectId, projectRefreshNonce]);
+
+    // Gantt tab: fetch tasks and dependencies in parallel (no waterfall)
+    useEffect(() => {
+        if (activeTab !== 'gantt' || !state.selectedProjectId) return;
+        const ac = new AbortController();
+        (async () => {
+            try {
+                const projectId = state.selectedProjectId;
+                const [tasksResult, depsResult] = await Promise.all([
+                    supabaseClient
+                        .from('tasks')
+                        .select('id, text, start_date, due_date, duration_days, is_milestone, project_id, completed, parent_task_id, assignee_id, contacts!fk_tasks_assignee_id(name)')
+                        .eq('project_id', projectId)
+                        .order('start_date', { ascending: true, nullsFirst: true }),
+                    supabaseClient
+                        .from('task_dependencies_by_project')
+                        .select('id, task_id, successor_task_id, dependency_type, lag_days')
+                        .eq('project_id', projectId)
+                ]);
+                if (ac.signal.aborted) return;
+                const { data: taskRows, error: taskErr } = tasksResult;
+                const { data: depRows, error: depErr } = depsResult;
+                if (taskErr) {
+                    console.error('Gantt: tasks fetch error', taskErr);
+                    setGanttTasks([]);
+                    setGanttDependencies([]);
+                    setGanttCriticalCount(0);
+                    setGanttCriticalIds([]);
+                    return;
+                }
+                if (depErr) {
+                    console.error('Gantt: task_dependencies fetch error', depErr);
+                    setGanttDependencies([]);
+                }
+                const tasks = taskRows || [];
+                const deps = depRows || [];
+                if (!ac.signal.aborted) {
+                    const ordered = orderTasksForGantt(tasks);
+                    setGanttTasks(ordered);
+                    setGanttDependencies(deps);
+                    const criticalIds = getCriticalPathTaskIds(tasks, deps);
+                    setGanttCriticalCount(criticalIds.length);
+                    setGanttCriticalIds(criticalIds);
+                }
+            } catch (e) {
+                if (!ac.signal.aborted) console.error('Gantt fetch error', e);
+            }
+        })();
+        return () => ac.abort();
+    }, [activeTab, state.selectedProjectId, projectRefreshNonce]);
+
+    useEffect(() => {
+        if (!state.selectedProjectId) {
+            setTaskDependencies([]);
+            return;
+        }
+        const ac = new AbortController();
+        (async () => {
+            const taskIds = allTasks.map((task) => task.id);
+            if (taskIds.length === 0) {
+                setTaskDependencies([]);
                 return;
             }
-            
-            try {
-                const { count, error } = await supabaseClient
-                    .from('project_issues')
-                    .select('*', { count: 'exact', head: true })
-                    .eq('project_id', state.selectedProjectId);
-
-                if (error) {
-                    console.error('Error fetching field issues count:', error);
-                    setFieldIssuesCount(0);
-                } else {
-                    setFieldIssuesCount(count || 0);
-                }
-            } catch (error) {
-                console.error('Error fetching field issues count:', error);
-                setFieldIssuesCount(0);
+            const { data, error } = await supabaseClient
+                .from('task_dependencies')
+                .select('id, task_id, successor_task_id, dependency_type, lag_days')
+                .in('task_id', taskIds);
+            if (ac.signal.aborted) return;
+            if (error) {
+                console.error('Error loading task dependencies:', error);
+                setTaskDependencies([]);
+                return;
             }
-        };
-
-        fetchFieldIssuesCount();
-    }, [state.selectedProjectId, activeTab]);
-
-    const project = state.projects.find(p => p.id === state.selectedProjectId);
-    const allTasks = state.tasks.filter(t => t.project_id === state.selectedProjectId);
+            const filtered = (data || []).filter((dep) => taskIds.includes(dep.successor_task_id));
+            setTaskDependencies(filtered);
+        })();
+        return () => ac.abort();
+    }, [state.selectedProjectId, allTaskIdsKey]);
     
     // Get all project crew members (any contact linked to this project)
     const projectCrewMembers = state.contacts.filter(contact => 
@@ -101,19 +327,36 @@ function ProjectDetailsView() {
     });
     
     // Sort tasks based on selected sort option
-    const tasks = filteredTasks.sort((a, b) => {
-        switch (taskSort) {
-            case 'priority':
-                const priorityOrder = { 'High': 3, 'Medium': 2, 'Low': 1 };
-                return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
-            case 'due_date':
-            default:
-                if (!a.due_date && !b.due_date) return 0;
-                if (!a.due_date) return 1;
-                if (!b.due_date) return -1;
-                return new Date(a.due_date) - new Date(b.due_date);
-        }
-    });
+    const tasks = useMemo(() => {
+        return [...filteredTasks].sort((a, b) => {
+            switch (taskSort) {
+                case 'priority':
+                    const priorityOrder = { 'High': 3, 'Medium': 2, 'Low': 1 };
+                    return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+                case 'due_date':
+                default:
+                    if (!a.due_date && !b.due_date) return 0;
+                    if (!a.due_date) return 1;
+                    if (!b.due_date) return -1;
+                    return new Date(a.due_date) - new Date(b.due_date);
+            }
+        });
+    }, [filteredTasks, taskSort]);
+    const taskPhaseGroups = {
+        unassigned: tasks.filter((task) => !task.project_phase_id),
+    };
+
+    const progressPercentForTasks = (taskList) => {
+        if (!taskList.length) return 0;
+        const done = taskList.filter((task) => task.completed).length;
+        return Math.round((100 * done) / taskList.length);
+    };
+
+    const projectActivity = (state.activityLog || []).filter((activity) => {
+        const sameProject = activity.project_id && String(activity.project_id) === String(project?.id);
+        const metadataProject = activity.metadata?.project_id && String(activity.metadata.project_id) === String(project?.id);
+        return sameProject || metadataProject;
+    }).slice(0, 30);
     
     if (!project) {
         return (
@@ -132,49 +375,166 @@ function ProjectDetailsView() {
         );
     }
 
+    const handleSaveProject = async (projectData) => {
+        if (!project) return;
+        setIsSavingProject(true);
+        try {
+            const {
+                selectedContacts = [],
+                emailAddresses = [],
+                ...projectFields
+            } = projectData || {};
+
+            const { data: updatedProject, error: projectError } = await supabaseClient
+                .from('projects')
+                .update(projectFields)
+                .eq('id', project.id)
+                .select()
+                .single();
+
+            if (projectError) throw projectError;
+
+            const orgId = project.organization_id || state.currentOrganization?.id;
+
+            if (orgId && Array.isArray(selectedContacts) && selectedContacts.length > 0) {
+                const projectContactsRows = selectedContacts.map((contactId) => ({
+                    project_id: project.id,
+                    contact_id: contactId,
+                    organization_id: orgId,
+                }));
+                const { error: contactsError } = await supabaseClient
+                    .from('project_contacts')
+                    .upsert(projectContactsRows, {
+                        onConflict: 'project_id,contact_id',
+                        ignoreDuplicates: true,
+                    });
+                if (contactsError && contactsError.code !== '23505') {
+                    addToast('Project updated, but some team links failed to save.', 'warning');
+                }
+            }
+
+            if (orgId && Array.isArray(emailAddresses) && emailAddresses.length > 0) {
+                for (const rawEmail of emailAddresses) {
+                    const email = String(rawEmail || '').trim().toLowerCase();
+                    if (!email) continue;
+
+                    const { data: existingContact } = await supabaseClient
+                        .from('contacts')
+                        .select('id')
+                        .eq('organization_id', orgId)
+                        .eq('email', email)
+                        .maybeSingle();
+
+                    let contactId = existingContact?.id || null;
+                    if (!contactId) {
+                        const { data: newContact, error: contactInsertError } = await supabaseClient
+                            .from('contacts')
+                            .insert({
+                                organization_id: orgId,
+                                name: email.split('@')[0],
+                                email,
+                                type: 'Team',
+                                role: 'Team Member',
+                                status: 'Available',
+                            })
+                            .select()
+                            .single();
+                        if (contactInsertError) {
+                            addToast(`Could not create contact ${email}.`, 'warning');
+                            continue;
+                        }
+                        contactId = newContact.id;
+                        dispatch({ type: 'ADD_CONTACT', payload: newContact });
+                    }
+
+                    const { error: linkError } = await supabaseClient
+                        .from('project_contacts')
+                        .upsert({
+                            project_id: project.id,
+                            contact_id: contactId,
+                            organization_id: orgId,
+                        }, { onConflict: 'project_id,contact_id', ignoreDuplicates: true });
+                    if (linkError && linkError.code !== '23505') {
+                        addToast(`Could not add ${email} to project crew.`, 'warning');
+                    }
+                }
+            }
+
+            dispatch({ type: 'UPDATE_PROJECT', payload: updatedProject });
+            addToast('Project updated successfully!', 'success');
+            setShowProjectModal(false);
+        } catch (error) {
+            addToast('Error updating project: ' + (error.message || 'Unknown error'), 'error');
+        } finally {
+            setIsSavingProject(false);
+        }
+    };
+
     const handleAddTask = async (taskData) => {
         setIsCreatingTask(true);
         
         try {
+            const predecessorTaskIds = Array.isArray(taskData.predecessor_task_ids)
+                ? [...new Set(taskData.predecessor_task_ids.filter(Boolean))]
+                : [];
+            const payload = { ...taskData };
+            delete payload.predecessor_task_ids;
+
             // Ensure assignee_id is valid before inserting
-            if (taskData.assignee_id) {
+            if (payload.assignee_id) {
                 // Verify the contact exists
                 const { data: contact, error: contactError } = await supabaseClient
                     .from('contacts')
                     .select('id')
-                    .eq('id', taskData.assignee_id)
+                    .eq('id', payload.assignee_id)
                     .single();
                 
                 if (contactError || !contact) {
                     console.warn('Assignee contact not found, setting to null');
-                    taskData.assignee_id = null;
+                    payload.assignee_id = null;
                 }
             }
             
             // Parse workflow_steps if it's a string (for JSONB storage)
-            if (taskData.workflow_steps && typeof taskData.workflow_steps === 'string') {
+            if (payload.workflow_steps && typeof payload.workflow_steps === 'string') {
                 try {
-                    taskData.workflow_steps = JSON.parse(taskData.workflow_steps);
+                    payload.workflow_steps = JSON.parse(payload.workflow_steps);
                 } catch (e) {
                     console.error('Error parsing workflow_steps:', e);
-                    taskData.workflow_steps = null;
+                    payload.workflow_steps = null;
                 }
             }
             
-            const { data, error } = await supabaseClient.from('tasks').insert(taskData).select().single();
+            const { data, error } = await supabaseClient.from('tasks').insert(payload).select().single();
             if (error) {
                 // Provide more specific error message for foreign key violations
                 if (error.message?.includes('foreign key constraint')) {
                     addToast('Cannot assign task: Selected assignee is not valid. Task created without assignee.', 'warning');
                     // Retry without assignee
-                    const taskDataWithoutAssignee = { ...taskData, assignee_id: null };
+                    const taskDataWithoutAssignee = { ...payload, assignee_id: null };
                     const { data: retryData, error: retryError } = await supabaseClient
                         .from('tasks')
                         .insert(taskDataWithoutAssignee)
                         .select()
                         .single();
                     if (!retryError && retryData) {
+                        if (predecessorTaskIds.length > 0) {
+                            const depRows = predecessorTaskIds.map((predecessorId) => ({
+                                task_id: predecessorId,
+                                successor_task_id: retryData.id,
+                                dependency_type: 'finish_to_start',
+                                lag_days: 0,
+                            }));
+                            const { data: insertedDeps } = await supabaseClient
+                                .from('task_dependencies')
+                                .insert(depRows)
+                                .select('id, task_id, successor_task_id, dependency_type, lag_days');
+                            if (insertedDeps?.length) {
+                                setGanttDependencies((prev) => [...prev, ...insertedDeps]);
+                            }
+                        }
                         dispatch({ type: 'ADD_TASK', payload: retryData });
+                        setProjectTasksList(prev => [...prev, retryData]);
                         addToast('Task added successfully (without assignee)', 'success');
                         setShowTaskModal(false);
                         logTaskCreated(retryData, state.user, project.id);
@@ -183,8 +543,25 @@ function ProjectDetailsView() {
                 }
                 throw error;
             }
+
+            if (predecessorTaskIds.length > 0) {
+                const depRows = predecessorTaskIds.map((predecessorId) => ({
+                    task_id: predecessorId,
+                    successor_task_id: data.id,
+                    dependency_type: 'finish_to_start',
+                    lag_days: 0,
+                }));
+                const { data: insertedDeps } = await supabaseClient
+                    .from('task_dependencies')
+                    .insert(depRows)
+                    .select('id, task_id, successor_task_id, dependency_type, lag_days');
+                if (insertedDeps?.length) {
+                    setGanttDependencies((prev) => [...prev, ...insertedDeps]);
+                }
+            }
             
             dispatch({ type: 'ADD_TASK', payload: data });
+            setProjectTasksList(prev => [...prev, data]);
             addToast('Task added successfully!', 'success');
             setShowTaskModal(false);
             
@@ -320,13 +697,29 @@ function ProjectDetailsView() {
     };
 
     const handleEditTask = async (taskId, updatedData) => {
+        const prev = allTasks.find((x) => x.id === taskId);
         const { error } = await supabaseClient.from('tasks').update(updatedData).eq('id', taskId);
         if (error) {
             addToast('Error updating task: ' + error.message, 'error');
         } else {
             const updatedTask = { ...state.tasks.find(t => t.id === taskId), ...updatedData };
             dispatch({ type: 'UPDATE_TASK', payload: updatedTask });
+            setProjectTasksList(prev => prev.map(t => t.id === taskId ? { ...t, ...updatedData } : t));
             addToast('Task updated successfully!', 'success');
+            if (prev && project && state.user) {
+                const changes = {};
+                Object.keys(updatedData).forEach((key) => {
+                    if (prev[key] !== updatedData[key]) changes[key] = updatedData[key];
+                });
+                if (Object.keys(changes).length > 0) {
+                    logTaskUpdated(
+                        { ...prev, ...updatedData, organization_id: prev.organization_id ?? project.organization_id },
+                        state.user,
+                        project.id,
+                        changes
+                    );
+                }
+            }
         }
     };
 
@@ -384,7 +777,18 @@ function ProjectDetailsView() {
             if (error) {
                 addToast('Error deleting task: ' + error.message, 'error');
             } else {
+                const deletedRow =
+                    allTasks.find((x) => x.id === taskToDelete.id) ||
+                    state.tasks.find((x) => x.id === taskToDelete.id);
+                if (deletedRow && project && state.user) {
+                    logTaskDeleted(
+                        { ...deletedRow, organization_id: deletedRow.organization_id ?? project.organization_id },
+                        state.user,
+                        project.id
+                    );
+                }
                 dispatch({ type: 'DELETE_TASK', payload: taskToDelete.id });
+                setProjectTasksList(prev => prev.filter(t => t.id !== taskToDelete.id));
                 const childCount = childTasks?.length || 0;
                 if (childCount > 0) {
                     addToast(`Task deleted successfully! ${childCount} subtask${childCount > 1 ? 's' : ''} converted to top-level tasks.`, 'success');
@@ -409,6 +813,13 @@ function ProjectDetailsView() {
         );
     };
 
+    const handleTaskDrop = async (taskId, phaseId) => {
+        const existing = allTasks.find((task) => String(task.id) === String(taskId));
+        if (!existing) return;
+        if ((existing.project_phase_id || null) === (phaseId || null)) return;
+        await handleEditTask(existing.id, { project_phase_id: phaseId || null });
+    };
+
     const handleBulkComplete = async (taskIds) => {
         const { error } = await supabaseClient.from('tasks').update({ completed: true }).in('id', taskIds);
         if (error) {
@@ -419,6 +830,18 @@ function ProjectDetailsView() {
                 const updatedTask = { ...state.tasks.find(t => t.id === taskId), completed: true };
                 dispatch({ type: 'UPDATE_TASK', payload: updatedTask });
             });
+            if (project && state.user) {
+                taskIds.forEach((taskId) => {
+                    const row = allTasks.find((x) => x.id === taskId) || state.tasks.find((x) => x.id === taskId);
+                    if (row) {
+                        logTaskCompleted(
+                            { ...row, completed: true, organization_id: row.organization_id ?? project.organization_id },
+                            state.user,
+                            project.id
+                        );
+                    }
+                });
+            }
             addToast(`${taskIds.length} tasks completed successfully!`, 'success');
             setSelectedTasks([]);
         }
@@ -462,6 +885,18 @@ function ProjectDetailsView() {
             if (error) {
                 addToast('Error deleting tasks: ' + error.message, 'error');
             } else {
+                if (project && state.user) {
+                    taskIds.forEach((taskId) => {
+                        const row = allTasks.find((x) => x.id === taskId) || state.tasks.find((x) => x.id === taskId);
+                        if (row) {
+                            logTaskDeleted(
+                                { ...row, organization_id: row.organization_id ?? project.organization_id },
+                                state.user,
+                                project.id
+                            );
+                        }
+                    });
+                }
                 // Remove each task from the state
                 taskIds.forEach(taskId => {
                     dispatch({ type: 'DELETE_TASK', payload: taskId });
@@ -480,13 +915,155 @@ function ProjectDetailsView() {
         }
     };
 
+    const setTaskPhotoBusy = (taskId, busy) => {
+        setPhotoActionTaskIds((prev) => {
+            const next = { ...prev };
+            if (busy) next[taskId] = true;
+            else delete next[taskId];
+            return next;
+        });
+    };
+
+    const replaceTaskRow = (taskId, nextTask) => {
+        dispatch({ type: 'UPDATE_TASK', payload: nextTask });
+        setProjectTasksList((prev) => prev.map((task) => (task.id === taskId ? nextTask : task)));
+    };
+
+    const hydratePhotoRows = async (rows = []) => {
+        if (!rows.length) return [];
+        const hydrated = await attachTaskPhotoUrls(supabaseClient, sortTaskPhotos(rows));
+        return sortTaskPhotos(hydrated);
+    };
+
+    const handleOpenTaskPhotos = async (taskId) => {
+        const task = allTasks.find((row) => row.id === taskId) || state.tasks.find((row) => row.id === taskId);
+        if (!task) return;
+        setPhotoModalTaskId(taskId);
+        try {
+            const rows = await fetchTaskPhotos(supabaseClient, taskId);
+            const hydrated = await hydratePhotoRows(rows || []);
+            replaceTaskRow(taskId, { ...task, task_photos: hydrated });
+        } catch (error) {
+            addToast(error.message || 'Could not load task photos.', 'error');
+        }
+    };
+
+    const handleAddTaskPhotos = async (taskId, files) => {
+        const task = allTasks.find((row) => row.id === taskId) || state.tasks.find((row) => row.id === taskId);
+        if (!task || !project) return;
+
+        setTaskPhotoBusy(taskId, true);
+        let preparedPhotos = [];
+        try {
+            preparedPhotos = await Promise.all(
+                files.map((file, index) => buildTaskPhotoDraft(file, (task.task_photos?.length || 0) + index))
+            );
+            const uploadedPhotos = [];
+            for (let index = 0; index < preparedPhotos.length; index++) {
+                const photo = preparedPhotos[index];
+                setTaskPhotoUploadProgress({ taskId, current: index + 1, total: preparedPhotos.length });
+                const row = await uploadTaskPhotoSet(supabaseClient, {
+                    taskId,
+                    organizationId: project.organization_id,
+                    projectId: project.id,
+                    originalFile: photo.originalFile,
+                    thumbnailFile: photo.thumbnailFile,
+                    caption: photo.caption,
+                    isCompletionPhoto: photo.is_completion_photo,
+                    uploadedByUserId: state.user?.id,
+                    sortOrder: (task.task_photos?.length || 0) + index,
+                    capturedAt: photo.captured_at || null,
+                });
+                uploadedPhotos.push(row);
+            }
+            const hydratedUploadedPhotos = await hydratePhotoRows(uploadedPhotos);
+            replaceTaskRow(taskId, {
+                ...task,
+                task_photos: sortTaskPhotos([...(task.task_photos || []), ...hydratedUploadedPhotos]),
+            });
+            addToast('Task photos uploaded.', 'success');
+        } catch (error) {
+            addToast(error.message || 'Could not upload task photos.', 'error');
+        } finally {
+            revokeTaskPhotoDraftUrls(preparedPhotos);
+            setTaskPhotoUploadProgress(null);
+            setTaskPhotoBusy(taskId, false);
+        }
+    };
+
+    const handleUpdateTaskPhoto = async (taskId, photoId, updates) => {
+        const task = allTasks.find((row) => row.id === taskId) || state.tasks.find((row) => row.id === taskId);
+        if (!task) return;
+        const targetPhoto = (task.task_photos || []).find((photo) => photo.id === photoId || photo.local_id === photoId);
+        if (!targetPhoto?.id) return;
+        setTaskPhotoBusy(taskId, true);
+        try {
+            const updatedPhoto = await updateTaskPhoto(supabaseClient, targetPhoto.id, updates);
+            const hydratedPhoto = (await hydratePhotoRows([updatedPhoto]))[0];
+            replaceTaskRow(taskId, {
+                ...task,
+                task_photos: sortTaskPhotos((task.task_photos || []).map((photo) => photo.id === targetPhoto.id ? { ...photo, ...hydratedPhoto } : photo)),
+            });
+        } catch (error) {
+            addToast(error.message || 'Could not update task photo.', 'error');
+        } finally {
+            setTaskPhotoBusy(taskId, false);
+        }
+    };
+
+    const handleDeleteTaskPhoto = async (taskId, photoId) => {
+        const task = allTasks.find((row) => row.id === taskId) || state.tasks.find((row) => row.id === taskId);
+        if (!task) return;
+        const targetPhoto = (task.task_photos || []).find((photo) => photo.id === photoId || photo.local_id === photoId);
+        if (!targetPhoto?.id) return;
+        setTaskPhotoBusy(taskId, true);
+        try {
+            await deleteTaskPhoto(supabaseClient, targetPhoto);
+            const remainingPhotos = sortTaskPhotos((task.task_photos || []).filter((photo) => photo.id !== targetPhoto.id));
+            if (remainingPhotos.length > 0) {
+                await reorderTaskPhotos(supabaseClient, taskId, remainingPhotos.map((photo) => photo.id));
+                remainingPhotos.forEach((photo, index) => { photo.sort_order = index; });
+            }
+            replaceTaskRow(taskId, { ...task, task_photos: remainingPhotos });
+            addToast('Task photo removed.', 'success');
+        } catch (error) {
+            addToast(error.message || 'Could not delete task photo.', 'error');
+        } finally {
+            setTaskPhotoBusy(taskId, false);
+        }
+    };
+
+    const handleMoveTaskPhoto = async (taskId, photoId, direction) => {
+        const task = allTasks.find((row) => row.id === taskId) || state.tasks.find((row) => row.id === taskId);
+        if (!task) return;
+        const currentPhotos = sortTaskPhotos(task.task_photos || []);
+        const currentIndex = currentPhotos.findIndex((photo) => photo.id === photoId || photo.local_id === photoId);
+        const nextIndex = currentIndex + direction;
+        if (currentIndex < 0 || nextIndex < 0 || nextIndex >= currentPhotos.length) return;
+        const reorderedPhotos = [...currentPhotos];
+        const [movedPhoto] = reorderedPhotos.splice(currentIndex, 1);
+        reorderedPhotos.splice(nextIndex, 0, movedPhoto);
+        setTaskPhotoBusy(taskId, true);
+        try {
+            await reorderTaskPhotos(supabaseClient, taskId, reorderedPhotos.map((photo) => photo.id));
+            replaceTaskRow(taskId, {
+                ...task,
+                task_photos: reorderedPhotos.map((photo, index) => ({ ...photo, sort_order: index })),
+            });
+        } catch (error) {
+            addToast(error.message || 'Could not reorder task photos.', 'error');
+        } finally {
+            setTaskPhotoBusy(taskId, false);
+        }
+    };
+
 
     return (
         <div>
-            <header className="flex items-center justify-between mb-8" data-onboarding="project-header">
+            <header className="flex items-center justify-between mb-6 app-card p-5" data-onboarding="project-header">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900">{project.name}</h1>
-                    <p className="text-gray-500">{project.address}</p>
+                    <h1 className="app-section-title">{project.name}</h1>
+                    <p className="app-section-subtitle">{project.address}</p>
                 </div>
                 <div className="flex items-center gap-4">
                     <PermissionGuard 
@@ -529,7 +1106,7 @@ function ProjectDetailsView() {
                                 addToast('Error updating project status: ' + error.message, 'error');
                             }
                         }}
-                        className={`px-3 py-1 text-sm font-semibold rounded-full border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 focus:outline-none appearance-none pr-8 ${
+                        className={`px-3 py-1 text-sm font-semibold rounded-full border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 focus:outline-hidden appearance-none pr-8 ${
                             project.status?.toLowerCase() === 'planning' ? 'bg-blue-100 text-blue-800' :
                             project.status?.toLowerCase() === 'in progress' ? 'bg-green-100 text-green-800' :
                             project.status?.toLowerCase() === 'on hold' ? 'bg-yellow-100 text-yellow-900' :
@@ -568,13 +1145,67 @@ function ProjectDetailsView() {
                             )}
                         </div>
                     )}
+                    <PermissionGuard permission="can_edit_projects">
+                        <button
+                            onClick={() => setShowProjectModal(true)}
+                            className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg shadow-xs hover:bg-gray-200 transition-colors"
+                            title="Edit project settings"
+                        >
+                            Edit project
+                        </button>
+                    </PermissionGuard>
                     <button 
                         onClick={() => setShowShare(true)}
-                        className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"
+                        className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs transition-colors app-action-primary"
                         title="Assign crew members from organization directory or invite guests"
                     >
                         + Manage Crew
                     </button>
+                    <PermissionGuard permission="can_create_projects">
+                        <button 
+                            onClick={() => setShowSaveAsTemplateModal(true)}
+                            className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs transition-colors app-action-secondary"
+                            title="Save this project structure as a reusable template"
+                        >
+                            Save as template
+                        </button>
+                    </PermissionGuard>
+                    <PermissionGuard permission="can_manage_progress_reports">
+                        <button
+                            type="button"
+                            onClick={() => setShowProgressReportModal(true)}
+                            className="px-4 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-xs hover:bg-emerald-700 transition-colors flex items-center gap-2"
+                            title="Schedule and manage progress reports"
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                            Progress reports
+                        </button>
+                    </PermissionGuard>
+                    <PermissionGuard permission="can_create_projects">
+                        <button
+                            type="button"
+                            onClick={() => setShowMsProjectImportModal(true)}
+                            className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs transition-colors bg-slate-700 text-white hover:bg-slate-800"
+                            title="Import tasks and schedule from Microsoft Project XML"
+                        >
+                            Import MS Project XML
+                        </button>
+                    </PermissionGuard>
+                    <PermissionGuard permission="can_edit_tasks">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSelectedWeatherImpact(null);
+                                setShowWeatherImpactModal(true);
+                            }}
+                            className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs transition-colors bg-indigo-600 text-white hover:bg-indigo-700"
+                            title="Log weather impacts and delays"
+                        >
+                            Weather impacts
+                        </button>
+                    </PermissionGuard>
                 </div>
             </header>
 
@@ -582,24 +1213,79 @@ function ProjectDetailsView() {
                 <ShareModal projectId={project.id} onClose={() => setShowShare(false)} />
             )}
 
+            {showSaveAsTemplateModal && (
+                <SaveAsTemplateModal 
+                    projectId={project.id} 
+                    projectName={project.name} 
+                    onClose={() => setShowSaveAsTemplateModal(false)} 
+                />
+            )}
+            {showProjectModal && (
+                <ProjectModal
+                    onClose={() => setShowProjectModal(false)}
+                    onSave={handleSaveProject}
+                    isLoading={isSavingProject}
+                    project={project}
+                />
+            )}
+
+            {showProgressReportModal && project && (
+                <ProgressReportModal projectId={project.id} onClose={() => setShowProgressReportModal(false)} />
+            )}
+
+            {showMsProjectImportModal && project && (
+                <MsProjectImportModal
+                    context="existing"
+                    projectId={project.id}
+                    projectName={project.name}
+                    onClose={() => setShowMsProjectImportModal(false)}
+                    onSuccess={() => setShowMsProjectImportModal(false)}
+                />
+            )}
+            {showWeatherImpactModal && project && (
+                <WeatherImpactModal
+                    project={project}
+                    allTasks={allTasks}
+                    projectPhases={projectPhases}
+                    taskDependencies={taskDependencies}
+                    projectDependencyMode={projectDependencyMode}
+                    initialImpact={selectedWeatherImpact}
+                    onClose={() => {
+                        setShowWeatherImpactModal(false);
+                        setSelectedWeatherImpact(null);
+                    }}
+                    onApplied={() => setProjectRefreshNonce((n) => n + 1)}
+                />
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
-                {/* Main Content Area with Tabs */}
-                <div className="lg:col-span-3">
+                {/* Main content — full width on Gantt and Tasks (desktop parity) */}
+                <div className={activeTab === 'gantt' || activeTab === 'tasks' ? 'lg:col-span-5' : 'lg:col-span-3'}>
                     {/* Tab Navigation */}
-                    <div className="border-b border-gray-200 mb-6">
+                    <div className="border-b border-slate-200 mb-6 app-card-soft px-4">
                         <nav className="-mb-px flex space-x-8">
                             <button
-                                onClick={() => setActiveTab('tasks')}
+                                onClick={() => setTabAndRoute('tasks')}
                                 className={`py-2 px-1 text-sm font-medium border-b-2 transition-colors ${
                                     activeTab === 'tasks'
                                         ? 'border-blue-500 text-blue-600'
                                         : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                                 }`}
                             >
-                                Tasks ({allTasks.length})
+                                Tasks ({Math.max(allTasks.length, ganttTasks.length)})
                             </button>
                             <button
-                                onClick={() => setActiveTab('fieldIssues')}
+                                onClick={() => setTabAndRoute('gantt')}
+                                className={`py-2 px-1 text-sm font-medium border-b-2 transition-colors ${
+                                    activeTab === 'gantt'
+                                        ? 'border-blue-500 text-blue-600'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                }`}
+                            >
+                                Gantt
+                            </button>
+                            <button
+                                onClick={() => setTabAndRoute('fieldIssues')}
                                 className={`py-2 px-1 text-sm font-medium border-b-2 transition-colors ${
                                     activeTab === 'fieldIssues'
                                         ? 'border-blue-500 text-blue-600'
@@ -608,42 +1294,89 @@ function ProjectDetailsView() {
                             >
                                 Field Issues ({fieldIssuesCount})
                             </button>
+                            {canViewActivityHistory && (
+                                <button
+                                    onClick={() => setTabAndRoute('activity')}
+                                    className={`py-2 px-1 text-sm font-medium border-b-2 transition-colors ${
+                                        activeTab === 'activity'
+                                            ? 'border-blue-500 text-blue-600'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                    }`}
+                                >
+                                    Activity
+                                </button>
+                            )}
                         </nav>
                     </div>
 
                     {/* Tab Content */}
                     <div className="min-h-96">
-                        {activeTab === 'tasks' && (
-                            <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200" data-onboarding="tasks-section">
-                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+                        {activeTab === 'gantt' && (
+                            <div className="app-card flex flex-col" data-onboarding="gantt-section" style={{ height: 'max(72vh, 520px)', maxHeight: '90vh' }}>
+                                <div className="flex flex-wrap items-center justify-between gap-4 px-6 pt-5 pb-3 flex-shrink-0">
+                                    <h2 className="text-xl font-bold">Gantt</h2>
                                     <div className="flex items-center gap-4">
-                                        <h2 className="text-xl font-bold">Tasks ({allTasks.length})</h2>
-                                        <div className="flex items-center gap-2">
-                                            <label className="text-sm font-medium text-gray-700">Filter:</label>
-                                            <select 
-                                                value={taskFilter} 
-                                                onChange={(e) => setTaskFilter(e.target.value)}
-                                                className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        <span className="text-gray-500 text-xs">
+                                            {ganttTasks.length} tasks &middot; {ganttDependencies.length} deps &middot; {ganttCriticalCount} critical
+                                        </span>
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={showCriticalPath}
+                                                onChange={(e) => setShowCriticalPath(e.target.checked)}
+                                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                            />
+                                            <span className="text-sm text-gray-700">Show critical path</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div className="flex-1 min-h-0 flex flex-col px-4 pb-4">
+                                    <GanttChart
+                                        tasks={ganttTasks}
+                                        dependencies={ganttDependencies}
+                                        criticalPathIds={ganttCriticalIds}
+                                        showCriticalPath={showCriticalPath}
+                                    />
+                                </div>
+                            </div>
+                        )}
+                        {activeTab === 'tasks' && (
+                            <div className="p-6 app-card" data-onboarding="tasks-section">
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        <h2 className="text-xl font-bold">Tasks ({Math.max(allTasks.length, ganttTasks.length)})</h2>
+                                        <div className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 p-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setTaskFilter('all')}
+                                                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                                                    taskFilter === 'all' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                                                }`}
                                             >
-                                                <option value="all">All Tasks</option>
-                                                <option value="pending">Pending</option>
-                                                <option value="completed">Completed</option>
-                                            </select>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <label className="text-sm font-medium text-gray-700">Sort by:</label>
-                                            <select 
-                                                value={taskSort} 
-                                                onChange={(e) => setTaskSort(e.target.value)}
-                                                className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                                All
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setTaskFilter('pending')}
+                                                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                                                    taskFilter === 'pending' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                                                }`}
                                             >
-                                                <option value="due_date">Due Date</option>
-                                                <option value="priority">Priority</option>
-                                            </select>
+                                                Open
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setTaskFilter('completed')}
+                                                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                                                    taskFilter === 'completed' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                            >
+                                                Done
+                                            </button>
                                         </div>
                                     </div>
                                     <PermissionGuard permission="can_create_tasks">
-                                        <button onClick={() => setShowTaskModal(true)} className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-sm hover:bg-blue-700">+ New Task</button>
+                                        <button onClick={() => setShowTaskModal(true)} className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-full shadow-xs hover:bg-blue-700">+ New Task</button>
                                     </PermissionGuard>
                                 </div>
                                 <TaskBulkActions
@@ -653,19 +1386,106 @@ function ProjectDetailsView() {
                                     onClearSelection={() => setSelectedTasks([])}
                                 />
                                 {tasks.length > 0 ? (
-                                    <ul className={`space-y-2 ${tasks.length > 7 ? 'max-h-[500px] overflow-y-auto pr-2' : ''}`}>
-                                        {tasks.map((task) => (
-                                            <TaskItem 
-                                                key={task.id} 
-                                                task={task}
-                                                onToggle={handleToggleTask} 
-                                                onEdit={handleEditTask} 
-                                                onDelete={handleDeleteTask}
-                                                isSelected={selectedTasks.includes(task.id)}
-                                                onSelect={handleTaskSelect}
-                                            />
-                                        ))}
-                                    </ul>
+                                    <div className={`space-y-3 ${tasks.length > 7 ? 'max-h-[min(70vh,560px)] overflow-y-auto pr-1' : ''}`}>
+                                        {(() => {
+                                            return (
+                                                <>
+                                                    {projectPhases.map((phase) => {
+                                                        const phaseTasks = tasks.filter((task) => task.project_phase_id === phase.id);
+                                                        const rows = mergeWeatherIntoPhaseTasks(phaseTasks, weatherImpacts);
+                                                        return (
+                                                            <PhaseTaskSection
+                                                                key={phase.id}
+                                                                projectId={project.id}
+                                                                phaseKey={phase.id}
+                                                                phaseId={phase.id}
+                                                                title={phase.name}
+                                                                progressPercent={progressPercentForTasks(phaseTasks)}
+                                                                onTaskDrop={handleTaskDrop}
+                                                            >
+                                                                {phaseTasks.length > 0 || rows.some((r) => r.kind === 'weather') ? (
+                                                                    <ul className="bg-white">
+                                                                        {rows.map((row) =>
+                                                                            row.kind === 'weather' ? (
+                                                                                <WeatherDelayMarker
+                                                                                    key={`weather-${row.impact.id}-${phase.id}`}
+                                                                                    impact={row.impact}
+                                                                                    onClick={() => {
+                                                                                        const targetImpact =
+                                                                                            row.impact?.is_grouped && Array.isArray(row.impact?.source_impacts)
+                                                                                                ? row.impact.source_impacts[0]
+                                                                                                : row.impact;
+                                                                                        setSelectedWeatherImpact(targetImpact);
+                                                                                        setShowWeatherImpactModal(true);
+                                                                                    }}
+                                                                                />
+                                                                            ) : (
+                                                                                <TaskItem
+                                                                                    key={row.task.id}
+                                                                                    task={row.task}
+                                                                                    onToggle={handleToggleTask}
+                                                                                    onEdit={handleEditTask}
+                                                                                    onDelete={handleDeleteTask}
+                                                                                    isSelected={selectedTasks.includes(row.task.id)}
+                                                                                    onSelect={handleTaskSelect}
+                                                                                    onOpenPhotos={handleOpenTaskPhotos}
+                                                                                />
+                                                                            )
+                                                                        )}
+                                                                    </ul>
+                                                                ) : (
+                                                                    <p className="text-sm text-gray-400 px-3 py-2 bg-white">No tasks in this phase.</p>
+                                                                )}
+                                                            </PhaseTaskSection>
+                                                        );
+                                                    })}
+                                                    {taskPhaseGroups.unassigned.length > 0 && (
+                                                        <PhaseTaskSection
+                                                            projectId={project.id}
+                                                            phaseKey="unassigned"
+                                                            phaseId={null}
+                                                            title="Unassigned"
+                                                            progressPercent={progressPercentForTasks(taskPhaseGroups.unassigned)}
+                                                            onTaskDrop={handleTaskDrop}
+                                                        >
+                                                            <ul className="bg-white">
+                                                                {mergeWeatherIntoPhaseTasks(
+                                                                    taskPhaseGroups.unassigned,
+                                                                    weatherImpacts
+                                                                ).map((row) =>
+                                                                    row.kind === 'weather' ? (
+                                                                        <WeatherDelayMarker
+                                                                            key={`weather-${row.impact.id}-unassigned`}
+                                                                            impact={row.impact}
+                                                                            onClick={() => {
+                                                                                const targetImpact =
+                                                                                    row.impact?.is_grouped && Array.isArray(row.impact?.source_impacts)
+                                                                                        ? row.impact.source_impacts[0]
+                                                                                        : row.impact;
+                                                                                setSelectedWeatherImpact(targetImpact);
+                                                                                setShowWeatherImpactModal(true);
+                                                                            }}
+                                                                        />
+                                                                    ) : (
+                                                                        <TaskItem
+                                                                            key={row.task.id}
+                                                                            task={row.task}
+                                                                            onToggle={handleToggleTask}
+                                                                            onEdit={handleEditTask}
+                                                                            onDelete={handleDeleteTask}
+                                                                            isSelected={selectedTasks.includes(row.task.id)}
+                                                                            onSelect={handleTaskSelect}
+                                                                            onOpenPhotos={handleOpenTaskPhotos}
+                                                                        />
+                                                                    )
+                                                                )}
+                                                            </ul>
+                                                        </PhaseTaskSection>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
                                 ) : (
                                     <div className="text-center py-12">
                                         <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -690,21 +1510,35 @@ function ProjectDetailsView() {
                             <FieldIssues projectId={project.id} />
                         )}
 
-                        {/* Workflow Section - Always visible under Tasks */}
-                        {activeTab === 'tasks' && (
-                            <div className="mt-6">
-                                <Workflow projectId={project.id} />
+                        {activeTab === 'activity' && canViewActivityHistory && (
+                            <div className="p-6 app-card">
+                                <ActivityHistoryPanel
+                                    mode="project"
+                                    organizationId={project.organization_id || state.currentOrganization?.id}
+                                    projectId={project.id}
+                                    title="Project activity"
+                                />
                             </div>
                         )}
+
+                        {/* Desktop parity: workflow block intentionally removed from tasks tab */}
                     </div>
                 </div>
 
-                {/* Project Sidebar */}
-                <div className="lg:col-span-2">
-                    <ProjectSidebar project={project} />
+                {/* Sidebar hidden on Gantt and Tasks, like desktop layout */}
+                <div className={activeTab === 'gantt' || activeTab === 'tasks' ? 'hidden' : 'lg:col-span-2'}>
+                    <ProjectSidebar project={project} showProjectPhases={activeTab !== 'gantt'} />
                 </div>
             </div>
-            {showTaskModal && <TaskModal project={project} onClose={() => setShowTaskModal(false)} onSave={handleAddTask} isLoading={isCreatingTask} />}
+            {showTaskModal && (
+                <TaskModal
+                    project={project}
+                    allTasks={allTasks}
+                    onClose={() => setShowTaskModal(false)}
+                    onSave={handleAddTask}
+                    isLoading={isCreatingTask}
+                />
+            )}
             <ConfirmDialog
                 isOpen={showDeleteConfirm}
                 onClose={() => setShowDeleteConfirm(false)}
@@ -714,6 +1548,26 @@ function ProjectDetailsView() {
                 confirmText="Delete"
                 cancelText="Cancel"
             />
+            {photoModalTaskId && (
+                <TaskPhotosModal
+                    task={allTasks.find((task) => task.id === photoModalTaskId)}
+                    onClose={() => setPhotoModalTaskId(null)}
+                    onAddPhotos={handleAddTaskPhotos}
+                    onUpdatePhoto={handleUpdateTaskPhoto}
+                    onDeletePhoto={handleDeleteTaskPhoto}
+                    onMovePhoto={handleMoveTaskPhoto}
+                    canManagePhotos={canManageTaskPhotos({
+                        project,
+                        userId: state.user?.id,
+                        userContactId: state.userContactId,
+                        userRoleName: state.userRole?.name,
+                        canEditTasks: state.userRole?.permissions?.can_edit_tasks === true,
+                        task: allTasks.find((task) => task.id === photoModalTaskId),
+                    })}
+                    photoActionBusy={Boolean(photoActionTaskIds[photoModalTaskId])}
+                    photoUploadProgress={taskPhotoUploadProgress?.taskId === photoModalTaskId ? taskPhotoUploadProgress : null}
+                />
+            )}
         </div>
     );
 }

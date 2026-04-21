@@ -81,7 +81,7 @@ const Workflow = ({ projectId }) => {
             setIsLoading(true);
             const { data, error } = await supabaseClient
                 .from('tasks')
-                .select('*')
+                .select('id, text, project_id, workflow_steps, current_workflow_step, completed, created_at')
                 .eq('project_id', projectId)
                 .not('workflow_steps', 'is', null);
 
@@ -245,12 +245,13 @@ const Workflow = ({ projectId }) => {
     };
 
     return (
-        <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="p-6 app-card">
             <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Workflows ({workflows.length})</h2>
+                <h2 className="text-xl font-bold text-slate-900">Workflows ({workflows.length})</h2>
                 <button 
+                    type="button"
                     onClick={() => setShowCreateModal(true)}
-                    className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-sm hover:bg-blue-700"
+                    className="app-action-primary px-4 py-2 text-sm font-semibold rounded-lg"
                 >
                     + Create Workflow
                 </button>
@@ -342,7 +343,7 @@ const Workflow = ({ projectId }) => {
                                                     
                                                     return (
                                                         <React.Fragment key={index}>
-                                                            <div className="flex flex-col items-center flex-shrink-0">
+                                                            <div className="flex flex-col items-center shrink-0">
                                                                 <div className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold transition-all ${
                                                                     stepIsCompleted
                                                                         ? 'bg-green-600 text-white shadow-md' 
@@ -412,7 +413,7 @@ const Workflow = ({ projectId }) => {
                                                         }`}
                                                     >
                                                         <div className="flex items-start gap-3">
-                                                            <div className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold flex-shrink-0 ${
+                                                            <div className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold shrink-0 ${
                                                                 isCompleted
                                                                     ? 'bg-green-600 text-white' 
                                                                     : isCurrentStep
@@ -447,17 +448,17 @@ const Workflow = ({ projectId }) => {
                                                                         )}
                                                                     </div>
                                                                     {isCompleted && (
-                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800 flex-shrink-0">
+                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800 shrink-0">
                                                                             Done
                                                                         </span>
                                                                     )}
                                                                     {isCurrentStep && (
-                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800 flex-shrink-0">
+                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800 shrink-0">
                                                                             Current
                                                                         </span>
                                                                     )}
                                                                     {isPending && (
-                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600 flex-shrink-0">
+                                                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600 shrink-0">
                                                                             Pending
                                                                         </span>
                                                                     )}
@@ -465,7 +466,7 @@ const Workflow = ({ projectId }) => {
                                                                 {isCurrentStep && (
                                                                     <button
                                                                         onClick={() => handleStepComplete(workflow.id, index)}
-                                                                        className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors shadow-sm"
+                                                                        className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors shadow-xs"
                                                                     >
                                                                         {stepNumber === workflowSteps.length 
                                                                             ? '✓ Complete Final Step' 
@@ -503,8 +504,9 @@ const Workflow = ({ projectId }) => {
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">No workflows yet</h3>
                     <p className="text-gray-500 mb-4">Create workflows to track multi-step processes and task progress.</p>
                     <button 
+                        type="button"
                         onClick={() => setShowCreateModal(true)}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                        className="app-action-primary px-4 py-2 rounded-lg transition-colors text-sm font-medium"
                     >
                         Create Your First Workflow
                     </button>
@@ -513,8 +515,8 @@ const Workflow = ({ projectId }) => {
 
             {/* Create Workflow Modal */}
             {showCreateModal && (
-                <div className="fixed inset-0 backdrop-blur-[2px] bg-white/20 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                <div className="fixed inset-0 backdrop-blur-sm bg-slate-900/20 flex items-center justify-center z-50">
+                    <div className="app-card max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto shadow-2xl">
                         <div className="p-6 border-b border-gray-200">
                             <div className="flex justify-between items-center">
                                 <h3 className="text-xl font-bold">Create New Workflow</h3>

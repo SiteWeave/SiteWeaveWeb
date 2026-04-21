@@ -20,6 +20,11 @@ function SettingsView() {
   const [appVersion, setAppVersion] = useState(packageJson.version);
   const [googleCalendarSynced, setGoogleCalendarSynced] = useState(false);
   const [outlookCalendarSynced, setOutlookCalendarSynced] = useState(false);
+  const [orgTaskNotifEnabled, setOrgTaskNotifEnabled] = useState(true);
+  const [orgTaskNotifLeadDays, setOrgTaskNotifLeadDays] = useState('14, 7');
+  const [orgReportSendHour, setOrgReportSendHour] = useState(8);
+  const [isLoadingOrgTaskNotif, setIsLoadingOrgTaskNotif] = useState(false);
+  const [isSavingOrgTaskNotif, setIsSavingOrgTaskNotif] = useState(false);
   
   // Form states
   const [fullName, setFullName] = useState(state.user?.user_metadata?.full_name || '');
@@ -48,6 +53,71 @@ function SettingsView() {
 
     fetchVersion();
   }, []);
+
+  useEffect(() => {
+    const loadOrgTaskNotificationSettings = async () => {
+      const orgId = state.currentOrganization?.id;
+      if (!orgId) return;
+      setIsLoadingOrgTaskNotif(true);
+      try {
+        const { data, error } = await supabaseClient
+          .from('organizations')
+          .select('task_start_notifications_enabled, task_start_notification_lead_days, progress_report_send_hour')
+          .eq('id', orgId)
+          .single();
+        if (error) throw error;
+        setOrgTaskNotifEnabled(data?.task_start_notifications_enabled !== false);
+        const days = Array.isArray(data?.task_start_notification_lead_days) && data.task_start_notification_lead_days.length > 0
+          ? data.task_start_notification_lead_days
+          : [14, 7];
+        setOrgTaskNotifLeadDays(days.join(', '));
+        setOrgReportSendHour(
+          Number.isFinite(Number(data?.progress_report_send_hour))
+            ? Math.max(0, Math.min(23, Number(data.progress_report_send_hour)))
+            : 8
+        );
+      } catch (error) {
+        addToast(`Error loading smart notifications: ${error.message}`, 'error');
+      } finally {
+        setIsLoadingOrgTaskNotif(false);
+      }
+    };
+    loadOrgTaskNotificationSettings();
+  }, [state.currentOrganization?.id]);
+
+  const parseLeadDays = (raw) => {
+    const values = String(raw || '')
+      .split(',')
+      .map((part) => parseInt(part.trim(), 10))
+      .filter((num) => Number.isFinite(num) && num >= 0 && num <= 365);
+    const deduped = Array.from(new Set(values));
+    return deduped.length > 0 ? deduped.sort((a, b) => b - a) : [14, 7];
+  };
+
+  const saveOrgTaskNotificationSettings = async () => {
+    const orgId = state.currentOrganization?.id;
+    if (!orgId) return;
+    setIsSavingOrgTaskNotif(true);
+    try {
+      const leadDays = parseLeadDays(orgTaskNotifLeadDays);
+      const { error } = await supabaseClient
+        .from('organizations')
+        .update({
+          task_start_notifications_enabled: orgTaskNotifEnabled,
+          task_start_notification_lead_days: leadDays,
+          progress_report_send_hour: Math.max(0, Math.min(23, Number(orgReportSendHour) || 8)),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', orgId);
+      if (error) throw error;
+      setOrgTaskNotifLeadDays(leadDays.join(', '));
+      addToast('Smart notification defaults saved', 'success');
+    } catch (error) {
+      addToast(`Error saving smart notifications: ${error.message}`, 'error');
+    } finally {
+      setIsSavingOrgTaskNotif(false);
+    }
+  };
 
   // Check calendar sync status
   useEffect(() => {
@@ -146,14 +216,14 @@ function SettingsView() {
     <div className="max-w-[95%] mx-auto space-y-8">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-          <p className="text-gray-500">Manage your account and preferences</p>
+          <h1 className="app-section-title">Settings</h1>
+          <p className="app-section-subtitle">Manage your account and preferences</p>
         </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Organization Section */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="app-card p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">Organization</h2>
           <div className="space-y-3">
             {state.currentOrganization ? (
@@ -166,7 +236,7 @@ function SettingsView() {
                   <span className="text-sm text-gray-600">Your Role:</span>
                   <p className="font-medium text-gray-900 mt-1">{state.userRole?.name || 'No role assigned'}</p>
                 </div>
-                <div className="pt-3 border-t border-gray-200 space-y-2">
+                <div className="pt-3 border-t border-slate-200 space-y-2">
                   <PermissionGuard permission="can_manage_roles">
                     <button
                       onClick={() => setShowRoleManagement(true)}
@@ -182,6 +252,57 @@ function SettingsView() {
                     >
                       Manage Team Members →
                     </button>
+                  </PermissionGuard>
+                </div>
+                <div className="pt-3 border-t border-slate-200">
+                  <PermissionGuard permission="can_manage_users">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-gray-800">Smart Notifications</p>
+                      {isLoadingOrgTaskNotif ? (
+                        <p className="text-xs text-gray-500">Loading…</p>
+                      ) : (
+                        <>
+                          <label className="flex items-center gap-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={orgTaskNotifEnabled}
+                              onChange={(e) => setOrgTaskNotifEnabled(e.target.checked)}
+                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            Email assignees before task start
+                          </label>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Lead days before start (comma-separated)</label>
+                            <input
+                              type="text"
+                              value={orgTaskNotifLeadDays}
+                              onChange={(e) => setOrgTaskNotifLeadDays(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                              placeholder="14, 7"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={saveOrgTaskNotificationSettings}
+                            disabled={isSavingOrgTaskNotif}
+                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            {isSavingOrgTaskNotif ? 'Saving…' : 'Save smart notifications'}
+                          </button>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Automated progress report send hour (ET)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="23"
+                              value={orgReportSendHour}
+                              onChange={(e) => setOrgReportSendHour(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </PermissionGuard>
                 </div>
               </>
@@ -212,7 +333,7 @@ function SettingsView() {
         {/* Profile Settings */}
         <div 
           data-onboarding="profile-section"
-          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+          className="app-card p-6"
         >
           <h2 className="text-xl font-semibold text-gray-900 mb-6">Profile Information</h2>
           
@@ -238,7 +359,7 @@ function SettingsView() {
                 type="text"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="Enter your full name"
               />
             </div>
@@ -246,7 +367,7 @@ function SettingsView() {
             <button
               type="submit"
               disabled={isUpdating}
-              className="w-full px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="w-full px-4 py-2 app-action-primary font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isUpdating ? (
                 <>
@@ -261,7 +382,7 @@ function SettingsView() {
         </div>
 
         {/* Security Settings */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="app-card p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-6">Security</h2>
           
           <form onSubmit={handleChangePassword} className="space-y-4">
@@ -273,7 +394,7 @@ function SettingsView() {
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="Enter new password"
                 minLength="6"
               />
@@ -287,7 +408,7 @@ function SettingsView() {
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="Confirm new password"
                 minLength="6"
               />
@@ -309,7 +430,7 @@ function SettingsView() {
             </button>
           </form>
 
-          <div className="mt-6 pt-6 border-t border-gray-200">
+          <div className="mt-6 pt-6 border-t border-slate-200">
             <h3 className="text-lg font-medium text-gray-900 mb-3">Account Actions</h3>
             <button
               onClick={handleSignOut}
@@ -324,15 +445,15 @@ function SettingsView() {
         </div>
 
         {/* Integrations */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="app-card p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-6">Integrations</h2>
           
           {/* Calendar Integrations */}
           <div className="space-y-4 mb-6">
             {/* Google Calendar */}
-            <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+            <div className="flex items-center justify-between p-4 border border-slate-200 rounded-xl app-card-soft">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200">
+                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-slate-200">
                   <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                     <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -364,9 +485,9 @@ function SettingsView() {
             </div>
 
             {/* Outlook Calendar */}
-            <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+            <div className="flex items-center justify-between p-4 border border-slate-200 rounded-xl app-card-soft">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200">
+                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-slate-200">
                   <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 4H5C3.89 4 3 4.9 3 6V20C3 21.1 3.89 22 5 22H19C20.1 22 21 21.1 21 20V6C21 4.9 20.1 4 19 4ZM19 20H5V9H19V20Z" fill="#0078D4"/>
                     <path d="M7 11H9V13H7V11ZM11 11H13V13H11V11ZM15 11H17V13H15V11ZM7 15H9V17H7V15ZM11 15H13V17H11V15ZM15 15H17V17H15V15Z" fill="#0078D4"/>
@@ -398,14 +519,14 @@ function SettingsView() {
           </div>
 
           {/* More Integrations */}
-          <div className="pt-4 border-t border-gray-200">
+          <div className="pt-4 border-t border-slate-200">
             <p className="text-xs text-gray-500 text-center">More integrations coming soon!</p>
           </div>
         </div>
       </div>
 
       {/* App Information */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <div className="app-card p-6">
         <h2 className="text-xl font-semibold text-gray-900 mb-4">About SiteWeave</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
           <div>
@@ -428,13 +549,14 @@ function SettingsView() {
 
       {/* Role Management Modal/View */}
       {showRoleManagement && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-gray-900">Role Management</h2>
+        <div className="fixed inset-0 backdrop-blur-sm bg-slate-900/30 flex items-center justify-center z-50 p-4">
+          <div className="app-card shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-slate-900">Role Management</h2>
               <button
+                type="button"
                 onClick={() => setShowRoleManagement(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-slate-400 hover:text-slate-600 transition-colors"
                 aria-label="Close"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

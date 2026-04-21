@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import PermissionGuard from './PermissionGuard';
+import DateDropdown from './DateDropdown';
 import { hasPermission } from '../utils/permissions';
 
 // Simple debounce utility
@@ -30,18 +31,17 @@ function BuildPath({ project }) {
     const [draggedPhase, setDraggedPhase] = useState(null);
     const [dragOverPhase, setDragOverPhase] = useState(null);
     const [dragOverPosition, setDragOverPosition] = useState(null);
-    const [editingProgressPhaseId, setEditingProgressPhaseId] = useState(null);
     const [editingNamePhaseId, setEditingNamePhaseId] = useState(null);
     const handlePhaseUpdateRef = useRef(null);
 
     // Default phases for construction projects
     const defaultPhases = [
-        { name: 'Mobilize', progress: 0, budget: 0, order: 1 },
-        { name: 'Clear and Grub', progress: 0, budget: 0, order: 2 },
-        { name: 'Demo', progress: 0, budget: 0, order: 3 },
-        { name: 'Rough Cut', progress: 0, budget: 0, order: 4 },
-        { name: 'BP', progress: 0, budget: 0, order: 5 },
-        { name: 'Final Grade', progress: 0, budget: 0, order: 6 }
+        { name: 'Mobilize', progress: 0, start_date: null, end_date: null, order: 1 },
+        { name: 'Clear and Grub', progress: 0, start_date: null, end_date: null, order: 2 },
+        { name: 'Demo', progress: 0, start_date: null, end_date: null, order: 3 },
+        { name: 'Rough Cut', progress: 0, start_date: null, end_date: null, order: 4 },
+        { name: 'BP', progress: 0, start_date: null, end_date: null, order: 5 },
+        { name: 'Final Grade', progress: 0, start_date: null, end_date: null, order: 6 }
     ];
 
     useEffect(() => {
@@ -180,6 +180,11 @@ function BuildPath({ project }) {
                 return newValues;
             });
         }
+    };
+
+    const commitPhaseDateField = (phaseId, field, iso) => {
+        const val = iso || null;
+        handlePhaseUpdate(phaseId, { [field]: val });
     };
 
     const handleAddPhase = async (phaseData) => {
@@ -342,37 +347,44 @@ function BuildPath({ project }) {
         }
     };
 
+    const deriveScheduleProgress = (phase) => {
+        const parseDate = (dateString) => {
+            if (!dateString) return null;
+            const parsed = new Date(`${dateString}T00:00:00Z`);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        };
+        const start = parseDate(phase.start_date);
+        const end = parseDate(phase.end_date);
+        const today = new Date();
+        if (!start || !end) return Math.max(0, Math.min(100, phase.progress || 0));
+        if (today < start) return 0;
+        if (today >= end) return 100;
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const totalDays = Math.max(1, Math.floor((end.getTime() - start.getTime()) / msPerDay));
+        const elapsedDays = Math.floor((today.getTime() - start.getTime()) / msPerDay);
+        return Math.max(0, Math.min(100, Math.round((elapsedDays / totalDays) * 100)));
+    };
+
     const calculateOverallProgress = () => {
         if (phases.length === 0) return 0;
-        
-        const totalBudget = phases.reduce((sum, phase) => sum + (phase.budget || 0), 0);
-        if (totalBudget === 0) return 0;
-        
-        const totalWeightedProgress = phases.reduce((sum, phase) => {
-            const phaseWeight = (phase.budget || 0) / totalBudget;
-            return sum + (phase.progress * phaseWeight);
+        const parseDate = (dateString) => {
+            if (!dateString) return null;
+            const parsed = new Date(`${dateString}T00:00:00Z`);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        };
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const durations = phases.map((phase) => {
+            const start = parseDate(phase.start_date);
+            const end = parseDate(phase.end_date);
+            if (!start || !end) return 1;
+            return Math.max(1, Math.floor((end.getTime() - start.getTime()) / msPerDay));
+        });
+        const totalDuration = durations.reduce((sum, value) => sum + value, 0);
+        if (totalDuration <= 0) return 0;
+        const weighted = phases.reduce((sum, phase, index) => {
+            return sum + ((deriveScheduleProgress(phase) * durations[index]) / totalDuration);
         }, 0);
-
-        return Math.round(totalWeightedProgress);
-    };
-
-    const calculateTotalBudget = () => {
-        return phases.reduce((sum, phase) => sum + (phase.budget || 0), 0);
-    };
-
-    const calculateSpentAmount = () => {
-        return phases.reduce((sum, phase) => {
-            return sum + ((phase.budget || 0) * (phase.progress / 100));
-        }, 0);
-    };
-
-    const formatCurrency = (amount) => {
-        return new Intl.NumberFormat('en-US', {
-            style: 'currency',
-            currency: 'USD',
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0
-        }).format(amount);
+        return Math.round(weighted);
     };
 
     return (
@@ -409,11 +421,6 @@ function BuildPath({ project }) {
                         style={{ width: `${calculateOverallProgress()}%` }}
                     ></div>
                 </div>
-                <PermissionGuard permission="can_view_financials">
-                    <div className="text-xs text-gray-600">
-                        {formatCurrency(calculateSpentAmount())} of {formatCurrency(calculateTotalBudget())} spent
-                    </div>
-                </PermissionGuard>
             </div>
 
             {/* Phases List - Fixed height with scroll */}
@@ -500,85 +507,41 @@ function BuildPath({ project }) {
                         <div className="mb-2">
                             <div className="flex justify-between items-center mb-1">
                                 <span className="text-xs text-gray-600">Progress</span>
-                                {editingProgressPhaseId === phase.id && isAuthorized() ? (
-                                    <div className="flex items-center gap-1">
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max="100"
-                                            value={editingValues[`${phase.id}_progress`] !== undefined ? editingValues[`${phase.id}_progress`] : phase.progress}
-                                            onChange={(e) => {
-                                                const value = Math.min(100, Math.max(0, parseInt(e.target.value) || 0));
-                                                handleInputChange(phase.id, 'progress', value);
-                                            }}
-                                            onBlur={() => {
-                                                const value = editingValues[`${phase.id}_progress`] !== undefined 
-                                                    ? editingValues[`${phase.id}_progress`] 
-                                                    : phase.progress;
-                                                debouncedUpdate(phase.id, 'progress', value);
-                                                setEditingProgressPhaseId(null);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                    e.target.blur();
-                                                } else if (e.key === 'Escape') {
-                                                    setEditingValues(prev => {
-                                                        const newValues = { ...prev };
-                                                        delete newValues[`${phase.id}_progress`];
-                                                        return newValues;
-                                                    });
-                                                    setEditingProgressPhaseId(null);
-                                                }
-                                            }}
-                                            className="w-16 px-2 py-1 text-xs font-semibold border border-gray-300 rounded text-right focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                            autoFocus
-                                            disabled={isLoading}
-                                        />
-                                        <span className="text-xs font-semibold">%</span>
-                                    </div>
-                                ) : (
-                                    <span 
-                                        className={`text-xs font-semibold flex items-center gap-1 ${isAuthorized() ? 'cursor-pointer hover:text-blue-600 transition-colors' : ''}`}
-                                        onClick={isAuthorized() ? () => setEditingProgressPhaseId(phase.id) : undefined}
-                                        title={isAuthorized() ? "Click to edit" : undefined}
-                                    >
-                                        {editingValues[`${phase.id}_progress`] !== undefined ? editingValues[`${phase.id}_progress`] : phase.progress}%
-                                        {isAuthorized() && (
-                                            <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                            </svg>
-                                        )}
-                                    </span>
-                                )}
+                                <span className="text-xs font-semibold">{deriveScheduleProgress(phase)}%</span>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-2">
                                 <div 
                                     className="bg-green-500 h-2 rounded-full transition-all duration-300"
-                                    style={{ width: `${editingValues[`${phase.id}_progress`] !== undefined ? editingValues[`${phase.id}_progress`] : phase.progress}%` }}
+                                    style={{ width: `${deriveScheduleProgress(phase)}%` }}
                                 ></div>
                             </div>
                         </div>
 
-                        {/* Budget Input - Only show when editing and user has edit permission */}
                         {isEditing && (
                             <PermissionGuard permission="can_edit_projects">
-                            <div className="mt-3">
-                                <label className="text-xs text-gray-600 block mb-1">Budget</label>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-sm">$</span>
-                                    <input
-                                        type="number"
-                                        value={editingValues[`${phase.id}_budget`] !== undefined ? editingValues[`${phase.id}_budget`] : (phase.budget || '')}
-                                        onChange={(e) => handleInputChange(phase.id, 'budget', parseFloat(e.target.value) || 0)}
-                                        onBlur={() => handleInputBlur(phase.id, 'budget')}
-                                        className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded"
-                                        placeholder="0"
-                                        disabled={isLoading}
-                                    />
+                                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-xs text-gray-600 block mb-1">Start Date</label>
+                                        <DateDropdown
+                                            compact
+                                            value={phase.start_date || ''}
+                                            onChange={(v) => commitPhaseDateField(phase.id, 'start_date', v)}
+                                            className={isLoading ? 'pointer-events-none opacity-60' : ''}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs text-gray-600 block mb-1">End Date</label>
+                                        <DateDropdown
+                                            compact
+                                            value={phase.end_date || ''}
+                                            onChange={(v) => commitPhaseDateField(phase.id, 'end_date', v)}
+                                            className={isLoading ? 'pointer-events-none opacity-60' : ''}
+                                        />
+                                    </div>
                                 </div>
-                            </div>
                             </PermissionGuard>
                         )}
+
                     </div>
                         {isDragTarget && dragOverPosition === 'bottom' && (
                             <div className="h-2 mt-1 rounded border-2 border-dashed border-blue-400 bg-blue-50"></div>
@@ -610,13 +573,17 @@ function BuildPath({ project }) {
 function PhaseModal({ phase, onClose, onSave, isLoading }) {
     const [formData, setFormData] = useState({
         name: phase?.name || '',
-        budget: phase?.budget || 0,
-        progress: phase?.progress || 0
+        start_date: phase?.start_date || '',
+        end_date: phase?.end_date || ''
     });
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        onSave(formData);
+        onSave({
+            ...formData,
+            start_date: formData.start_date || null,
+            end_date: formData.end_date || null,
+        });
         onClose();
     };
 
@@ -636,35 +603,21 @@ function PhaseModal({ phase, onClose, onSave, isLoading }) {
                             type="text"
                             value={formData.name}
                             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                             required
                         />
                     </div>
 
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Budget ($)
-                        </label>
-                        <input
-                            type="number"
-                            min="0"
-                            value={formData.budget}
-                            onChange={(e) => setFormData({ ...formData, budget: parseFloat(e.target.value) || 0 })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    <div className="space-y-4">
+                        <DateDropdown
+                            label="Start Date"
+                            value={formData.start_date}
+                            onChange={(v) => setFormData({ ...formData, start_date: v })}
                         />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Initial Progress (%)
-                        </label>
-                        <input
-                            type="number"
-                            min="0"
-                            max="100"
-                            value={formData.progress}
-                            onChange={(e) => setFormData({ ...formData, progress: parseInt(e.target.value) || 0 })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        <DateDropdown
+                            label="End Date"
+                            value={formData.end_date}
+                            onChange={(v) => setFormData({ ...formData, end_date: v })}
                         />
                     </div>
 

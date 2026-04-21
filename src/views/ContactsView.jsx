@@ -1,11 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import AddContactModal from '../components/AddContactModal';
 import ContactCard from '../components/ContactCard';
 import ConfirmDialog from '../components/ConfirmDialog';
 
-function ContactsView() {
+function ContactsView({ embedded = false, defaultProjectFilter = null }) {
+    const navigate = useNavigate();
     const { state, dispatch } = useAppContext();
     const { addToast } = useToast();
     const [activeTab, setActiveTab] = useState('Team');
@@ -33,6 +35,12 @@ function ContactsView() {
     const [assignContact, setAssignContact] = useState(null);
     const [selectedAssignProject, setSelectedAssignProject] = useState('');
     const [isAssigningContact, setIsAssigningContact] = useState(false);
+
+    useEffect(() => {
+        if (defaultProjectFilter != null && defaultProjectFilter !== '') {
+            setProjectFilter(String(defaultProjectFilter));
+        }
+    }, [defaultProjectFilter]);
 
     // Listen for tour navigation to switch to Subcontractors tab
     useEffect(() => {
@@ -308,19 +316,25 @@ function ContactsView() {
             const channel = state.messageChannels.find(ch => String(ch.project_id) === String(firstProjectId));
             if (channel) {
                 dispatch({ type: 'SET_CHANNEL', payload: channel.id });
+                navigate('/team');
+                addToast('Opening project discussion.', 'info');
                 return;
             }
         }
-        dispatch({ type: 'SET_VIEW', payload: 'Messages' });
-        addToast('Switching to Messages. Select a channel to start chatting.', 'info');
+        navigate('/team');
+        addToast('Open Team and pick a project channel to start chatting.', 'info');
     };
 
     return (
         <>
-            <header className="flex items-center justify-between mb-6">
+            <header className={`flex items-center justify-between ${embedded ? 'mb-4' : 'mb-6'}`}>
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
-                    <p className="text-gray-500">Manage your team members and subcontractors</p>
+                    <h1 className={`${embedded ? 'text-2xl' : 'text-3xl'} font-bold text-gray-900`}>
+                        {embedded ? 'Directory' : 'Contacts'}
+                    </h1>
+                    {!embedded && (
+                        <p className="text-gray-500">Manage your team members and trade partners</p>
+                    )}
                 </div>
                 <div className="flex gap-3">
                     <button 
@@ -338,7 +352,7 @@ function ContactsView() {
                     <button 
                         onClick={() => setShowAddModal(true)} 
                         data-onboarding="add-contact-btn"
-                        className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"
+                        className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-xs hover:bg-blue-700 transition-colors"
                     >
                         + Add Contact
                     </button>
@@ -410,7 +424,7 @@ function ContactsView() {
                 </div>
             </div>
 
-            <div className="flex border-b border-gray-200 mb-6">
+            <div className="flex border-b border-slate-200 mb-6">
                 <button 
                     onClick={() => setActiveTab('Team')} 
                     className={`px-4 py-2 text-sm font-semibold ${activeTab === 'Team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}
@@ -421,12 +435,12 @@ function ContactsView() {
                     onClick={() => setActiveTab('Subcontractors')} 
                     className={`px-4 py-2 text-sm font-semibold ${activeTab === 'Subcontractors' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}
                 >
-                    Subcontractors ({subcontractors.length})
+                    Trade Partners ({subcontractors.length})
                 </button>
             </div>
             
             {activeTab === 'Team' ? (
-                <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200" data-onboarding="contacts-list">
+                <div className="p-6 app-card" data-onboarding="contacts-list">
                     <h2 className="text-xl font-bold mb-4">
                         Team Members ({filteredContacts.length})
                     </h2>
@@ -454,9 +468,9 @@ function ContactsView() {
                     )}
                 </div>
             ) : (
-                <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200" data-onboarding="contacts-list">
+                <div className="p-6 app-card" data-onboarding="contacts-list">
                     <h2 className="text-xl font-bold mb-4">
-                        All Subcontractors ({filteredContacts.length})
+                        All Trade Partners ({filteredContacts.length})
                     </h2>
                     <ul className="space-y-3">
                         {filteredContacts.map(c => (
@@ -476,7 +490,7 @@ function ContactsView() {
                         <div className="text-center py-8 text-gray-500">
                             {searchTerm || statusFilter !== 'All' 
                                 ? 'No contacts match your search criteria' 
-                                : 'No subcontractors found'
+                                : 'No trade partners found'
                             }
                         </div>
                     )}
@@ -515,22 +529,24 @@ function ContactsView() {
 
             {/* Import Modal */}
             {showImportModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
-                        <h2 className="text-2xl font-bold mb-6">Import Contacts</h2>
+                <div className="fixed inset-0 backdrop-blur-sm bg-slate-900/30 flex items-center justify-center z-50">
+                    <div className="app-card shadow-2xl p-8 w-full max-w-md">
+                        <h2 className="text-2xl font-bold text-slate-900 mb-6">Import Contacts</h2>
                         <p className="text-gray-600 mb-6">
                             Import contacts from a CSV file. The file should have columns: Name, Role, Type, Company, Trade, Email, Phone, Status
                         </p>
                         <div className="flex justify-end gap-4">
                             <button 
+                                type="button"
                                 onClick={() => setShowImportModal(false)}
-                                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                                className="px-6 py-2 app-action-secondary rounded-lg transition-colors"
                             >
                                 Cancel
                             </button>
                             <button 
+                                type="button"
                                 onClick={handleImportContacts}
-                                className="px-6 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                                className="px-6 py-2 app-action-primary rounded-lg transition-colors"
                             >
                                 Choose File
                             </button>
@@ -541,22 +557,24 @@ function ContactsView() {
 
             {/* Export Modal */}
             {showExportModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
-                        <h2 className="text-2xl font-bold mb-6">Export Contacts</h2>
+                <div className="fixed inset-0 backdrop-blur-sm bg-slate-900/30 flex items-center justify-center z-50">
+                    <div className="app-card shadow-2xl p-8 w-full max-w-md">
+                        <h2 className="text-2xl font-bold text-slate-900 mb-6">Export Contacts</h2>
                         <p className="text-gray-600 mb-6">
                             Export {activeTab.toLowerCase()} contacts as a CSV file.
                         </p>
                         <div className="flex justify-end gap-4">
                             <button 
+                                type="button"
                                 onClick={() => setShowExportModal(false)}
-                                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                                className="px-6 py-2 app-action-secondary rounded-lg transition-colors"
                             >
                                 Cancel
                             </button>
                             <button 
+                                type="button"
                                 onClick={handleExportContacts}
-                                className="px-6 py-2 text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+                                className="px-6 py-2 rounded-lg bg-emerald-600 text-white border border-emerald-700 hover:bg-emerald-700 transition-colors"
                             >
                                 Export
                             </button>
@@ -573,8 +591,8 @@ function ContactsView() {
                 const unassignedProjects = state.projects.filter(p => !assignedProjectIds.includes(String(p.id)));
                 
                 return (
-                    <div className="fixed inset-0 backdrop-blur-[2px] bg-white/20 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+                    <div className="fixed inset-0 backdrop-blur-sm bg-slate-900/30 flex items-center justify-center z-50 p-4">
+                        <div className="app-card shadow-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
                             <h2 className="text-2xl font-bold mb-2">Assign to Project</h2>
                             <p className="text-gray-600 text-sm mb-4">
                                 Manage project assignments for <span className="font-semibold">{assignContact.name}</span>.

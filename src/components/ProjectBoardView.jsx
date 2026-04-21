@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAppContext, supabaseClient } from '../context/AppContext';
-import { formatDateShort, getStatusColor, normalizeStatusDisplay } from '../utils/projectHelpers';
-import { calculateProjectProgress } from '../utils/projectHelpers';
+import {
+    formatDateShort,
+    getStatusColor,
+    normalizeStatusDisplay,
+    calculateProjectsProgressMap,
+} from '../utils/projectHelpers';
 import PermissionGuard from './PermissionGuard';
 
 function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
@@ -59,23 +63,10 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
             setProjectData(initialData);
             
             try {
-                // Load all project progress in parallel for maximum performance
-                const results = await Promise.all(
-                    activeProjects.map(async (project) => {
-                        try {
-                            const progress = await calculateProjectProgress(project.id, supabaseClient);
-                            return { id: project.id, progress: progress || 0 };
-                        } catch (error) {
-                            console.error(`Error loading progress for project ${project.id}:`, error);
-                            return { id: project.id, progress: 0 };
-                        }
-                    })
-                );
-                
-                // Update all at once after parallel loading
+                const progressMap = await calculateProjectsProgressMap(activeProjects, supabaseClient);
                 const data = {};
-                results.forEach(result => {
-                    data[result.id] = { progress: result.progress, loading: false };
+                activeProjects.forEach((project) => {
+                    data[project.id] = { progress: progressMap[project.id] || 0, loading: false };
                 });
                 setProjectData(data);
             } catch (error) {
@@ -171,8 +162,8 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
 
     if (activeProjects.length === 0) {
         return (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-                <p className="text-gray-500">No active projects found.</p>
+            <div className="app-card p-12 text-center">
+                <p className="text-slate-500">No active projects found.</p>
             </div>
         );
     }
@@ -190,7 +181,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
                     return (
                         <div
                             key={status}
-                            className={`flex-shrink-0 w-72 rounded-lg p-4 transition-all duration-200 ${
+                            className={`shrink-0 w-72 rounded-lg p-4 transition-all duration-200 ${
                                 isBeingDraggedOver 
                                     ? 'bg-blue-50 border-2 border-blue-400 border-dashed shadow-lg scale-105' 
                                     : 'bg-gray-50 border-2 border-transparent'
@@ -225,7 +216,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
                                             onDragStart={(e) => handleDragStart(e, project)}
                                             onDragEnd={handleDragEnd}
                                             onClick={() => onProjectClick && onProjectClick(project)}
-                                            className={`bg-white rounded-lg p-3 shadow-sm border border-gray-200 cursor-move hover:shadow-md transition-all duration-200 ${
+                                            className={`app-card rounded-xl p-3 cursor-move hover:shadow-md transition-all duration-200 ${
                                                 isBeingDragged ? 'opacity-40 scale-95' : 'opacity-100'
                                             }`}
                                         >

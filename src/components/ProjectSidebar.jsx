@@ -1,13 +1,24 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useAppContext } from '../context/AppContext';
 import BuildPath from './BuildPath';
 import Avatar from './Avatar';
+import { formatActivityLine } from '../utils/formatActivityLine';
+import { activityLineT } from '../utils/activityLineT';
+import PermissionGuard from './PermissionGuard';
 
-function ProjectSidebar({ project }) {
+function ProjectSidebar({ project, showProjectPhases = true }) {
     const { state } = useAppContext();
-    
+    const activityLog = state.activityLog || [];
+    const projectNamesById = useMemo(() => {
+        const m = {};
+        (state.projects || []).forEach((p) => {
+            m[p.id] = p.name;
+        });
+        return m;
+    }, [state.projects]);
+
     // Get recent activity for this specific project (filtered by RLS)
-    const projectActivity = state.activityLog
+    const projectActivity = activityLog
         .filter(activity => activity.project_id === project.id)
         .slice(0, 2)
         .map(activity => ({
@@ -15,8 +26,8 @@ function ProjectSidebar({ project }) {
             user: { 
                 name: activity.user_name, 
                 avatar: activity.user_avatar || null // null means use default Avatar component
-            }, 
-            action: activity.action,
+            },
+            description: formatActivityLine(activity, activityLineT, { projectNamesById }),
             time: formatTimeAgo(activity.created_at)
         }));
 
@@ -45,8 +56,8 @@ function ProjectSidebar({ project }) {
     return (
         <div className="space-y-6">
             {hasMilestones && (
-                <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200">
-                    <h3 className="font-bold mb-3">Overview</h3>
+                <div className="p-6 app-card">
+                    <h3 className="font-bold text-slate-900 mb-3">Overview</h3>
                     <ul className="space-y-3">
                         {project.milestones.map((m, index) => (
                             <li key={index} className="flex justify-between items-center text-sm">
@@ -57,14 +68,16 @@ function ProjectSidebar({ project }) {
                     </ul>
                 </div>
             )}
-            
-            {/* Progress Status Section */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 h-[600px] overflow-hidden">
+
+            {showProjectPhases && (
+            <div className="app-card p-6 h-[600px] overflow-hidden">
                 <BuildPath project={project} />
             </div>
-            
-            <div className="p-6 bg-white rounded-xl shadow-sm border border-gray-200">
-                <h3 className="font-bold mb-3">Recent Activity</h3>
+            )}
+
+            <PermissionGuard permission="can_view_activity_history">
+            <div className="p-6 app-card">
+                <h3 className="font-bold text-slate-900 mb-3">Recent Activity</h3>
                  <div className="space-y-3">
                     {projectActivity.length > 0 ? projectActivity.map(activity => (
                         <div key={activity.id} className="flex items-start gap-3 text-sm">
@@ -76,7 +89,7 @@ function ProjectSidebar({ project }) {
                                 </div>
                             )}
                             <div>
-                                <p><span className="font-semibold">{activity.user.name}</span> {activity.action}</p>
+                                <p><span className="font-semibold">{activity.user.name}</span> {activity.description}</p>
                                 <p className="text-xs text-gray-400">{activity.time}</p>
                             </div>
                         </div>
@@ -85,6 +98,7 @@ function ProjectSidebar({ project }) {
                     )}
                 </div>
             </div>
+            </PermissionGuard>
         </div>
     );
 }

@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS organizations (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
+ALTER TABLE organizations
+ADD COLUMN IF NOT EXISTS progress_report_send_hour INTEGER NOT NULL DEFAULT 8;
+
+ALTER TABLE organizations
+ADD COLUMN IF NOT EXISTS progress_report_timezone TEXT NOT NULL DEFAULT 'America/New_York';
+
 -- Roles Table (Dynamic roles with JSONB permissions)
 CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -53,6 +59,7 @@ CREATE TABLE IF NOT EXISTS projects (
     milestones JSONB,
     notification_count INTEGER DEFAULT 0,
     color TEXT,
+    dependency_scheduling_mode TEXT NOT NULL DEFAULT 'auto' CHECK (dependency_scheduling_mode IN ('auto', 'manual')),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
@@ -290,9 +297,49 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed BOOLEAN DEFAULT false,
     assignee_id UUID,
     recurrence TEXT,
-    parent_task_id UUID REFERENCES tasks(id),
+    parent_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
     is_recurring_instance BOOLEAN DEFAULT false,
+    start_date DATE,
+    duration_days INTEGER,
+    is_milestone BOOLEAN DEFAULT false,
+    percent_complete INTEGER CHECK (percent_complete IS NULL OR (percent_complete >= 0 AND percent_complete <= 100)),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Task Dependencies Table (Gantt: predecessor/successor links)
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    successor_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    dependency_type TEXT NOT NULL DEFAULT 'finish_to_start'
+        CHECK (dependency_type IN ('finish_to_start', 'start_to_start', 'finish_to_finish', 'start_to_finish')),
+    lag_days INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    CONSTRAINT task_dependencies_no_self CHECK (task_id != successor_task_id),
+    CONSTRAINT task_dependencies_unique UNIQUE (task_id, successor_task_id)
+);
+
+-- Project Templates Table (reusable project structure: phases, tasks, dependencies)
+CREATE TABLE IF NOT EXISTS project_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    structure JSONB NOT NULL DEFAULT '{}'
+);
+
+-- Schedule import templates (Microsoft Project XML field mapping, org-scoped)
+CREATE TABLE IF NOT EXISTS schedule_import_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'ms_project_xml',
+    config JSONB NOT NULL DEFAULT '{}',
+    created_by_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Activity Log Table (for tracking user actions)
@@ -453,12 +500,22 @@ ALTER TABLE issue_steps ADD COLUMN IF NOT EXISTS updated_by_user_id UUID;
 
 -- Add recurrence fields to tasks table
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence TEXT;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id UUID REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_recurring_instance BOOLEAN DEFAULT false;
 
 -- Add workflow steps to tasks table (stored as JSONB)
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workflow_steps JSONB;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS current_workflow_step INTEGER DEFAULT 1;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workflow_steps_legacy JSONB;
+COMMENT ON COLUMN tasks.workflow_steps IS 'Deprecated: legacy workflow JSON migrated to task_dependencies.';
+COMMENT ON COLUMN tasks.current_workflow_step IS 'Deprecated: legacy workflow pointer no longer used.';
+COMMENT ON COLUMN tasks.workflow_steps_legacy IS 'Read-only archive of deprecated workflow steps captured during migration.';
+
+-- Add Gantt/schedule fields to tasks table
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS duration_days INTEGER;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_milestone BOOLEAN DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS percent_complete INTEGER;
 
 -- ============================================================================
 -- DATA CLEANUP BEFORE FOREIGN KEY CONSTRAINTS
@@ -596,10 +653,10 @@ END $$;
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_comments_issue_id') THEN
-ALTER TABLE issue_comments ADD CONSTRAINT fk_issue_comments_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id);
+ALTER TABLE issue_comments ADD CONSTRAINT fk_issue_comments_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_comments_step_id') THEN
-ALTER TABLE issue_comments ADD CONSTRAINT fk_issue_comments_step_id FOREIGN KEY (step_id) REFERENCES issue_steps(id);
+ALTER TABLE issue_comments ADD CONSTRAINT fk_issue_comments_step_id FOREIGN KEY (step_id) REFERENCES issue_steps(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_comments_user_id') THEN
 ALTER TABLE issue_comments ADD CONSTRAINT fk_issue_comments_user_id FOREIGN KEY (user_id) REFERENCES auth.users(id);
@@ -610,10 +667,10 @@ END $$;
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_files_issue_id') THEN
-ALTER TABLE issue_files ADD CONSTRAINT fk_issue_files_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id);
+ALTER TABLE issue_files ADD CONSTRAINT fk_issue_files_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_files_step_id') THEN
-ALTER TABLE issue_files ADD CONSTRAINT fk_issue_files_step_id FOREIGN KEY (step_id) REFERENCES issue_steps(id);
+ALTER TABLE issue_files ADD CONSTRAINT fk_issue_files_step_id FOREIGN KEY (step_id) REFERENCES issue_steps(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_files_uploaded_by') THEN
 ALTER TABLE issue_files ADD CONSTRAINT fk_issue_files_uploaded_by FOREIGN KEY (uploaded_by_user_id) REFERENCES auth.users(id);
@@ -624,7 +681,7 @@ END $$;
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_steps_issue_id') THEN
-ALTER TABLE issue_steps ADD CONSTRAINT fk_issue_steps_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id);
+ALTER TABLE issue_steps ADD CONSTRAINT fk_issue_steps_issue_id FOREIGN KEY (issue_id) REFERENCES project_issues(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_issue_steps_assigned_to_user') THEN
 ALTER TABLE issue_steps ADD CONSTRAINT fk_issue_steps_assigned_to_user FOREIGN KEY (assigned_to_user_id) REFERENCES auth.users(id);
@@ -739,7 +796,7 @@ BEGIN
 ALTER TABLE project_contacts ADD CONSTRAINT fk_project_contacts_project_id FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_project_contacts_contact_id') THEN
-ALTER TABLE project_contacts ADD CONSTRAINT fk_project_contacts_contact_id FOREIGN KEY (contact_id) REFERENCES contacts(id);
+ALTER TABLE project_contacts ADD CONSTRAINT fk_project_contacts_contact_id FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_project_contacts_organization_id') THEN
 ALTER TABLE project_contacts ADD CONSTRAINT fk_project_contacts_organization_id FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE;
@@ -756,7 +813,7 @@ BEGIN
         ALTER TABLE project_collaborators ADD CONSTRAINT fk_project_collaborators_organization_id FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_project_collaborators_invited_by') THEN
-        ALTER TABLE project_collaborators ADD CONSTRAINT fk_project_collaborators_invited_by FOREIGN KEY (invited_by_user_id) REFERENCES auth.users(id);
+        ALTER TABLE project_collaborators ADD CONSTRAINT fk_project_collaborators_invited_by FOREIGN KEY (invited_by_user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
     END IF;
 END $$;
 
@@ -795,14 +852,14 @@ BEGIN
     -- Also drop if it exists with the default PostgreSQL naming
     ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_assignee_id_fkey;
     -- Recreate the constraint to reference contacts(id)
-    ALTER TABLE tasks ADD CONSTRAINT fk_tasks_assignee_id FOREIGN KEY (assignee_id) REFERENCES contacts(id);
+    ALTER TABLE tasks ADD CONSTRAINT fk_tasks_assignee_id FOREIGN KEY (assignee_id) REFERENCES contacts(id) ON DELETE SET NULL;
 END $$;
 
 -- User preferences constraints
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_preferences_user_id') THEN
-        ALTER TABLE user_preferences ADD CONSTRAINT fk_user_preferences_user_id FOREIGN KEY (user_id) REFERENCES auth.users(id);
+        ALTER TABLE user_preferences ADD CONSTRAINT fk_user_preferences_user_id FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
     END IF;
 END $$;
 
@@ -810,7 +867,7 @@ END $$;
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_activity_log_user_id') THEN
-        ALTER TABLE activity_log ADD CONSTRAINT fk_activity_log_user_id FOREIGN KEY (user_id) REFERENCES auth.users(id);
+        ALTER TABLE activity_log ADD CONSTRAINT fk_activity_log_user_id FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
     END IF;
     -- Drop and recreate the project_id constraint with CASCADE to allow project deletion
     IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_activity_log_project_id') THEN
@@ -838,7 +895,7 @@ BEGIN
         ALTER TABLE invitations ADD CONSTRAINT fk_invitations_step_id FOREIGN KEY (step_id) REFERENCES issue_steps(id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_invitations_invited_by') THEN
-        ALTER TABLE invitations ADD CONSTRAINT fk_invitations_invited_by FOREIGN KEY (invited_by_user_id) REFERENCES auth.users(id);
+        ALTER TABLE invitations ADD CONSTRAINT fk_invitations_invited_by FOREIGN KEY (invited_by_user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
     END IF;
 END $$;
 
@@ -873,6 +930,28 @@ $$ LANGUAGE sql SECURITY DEFINER STABLE;
 CREATE OR REPLACE FUNCTION get_user_contact_id()
 RETURNS UUID AS $$
   SELECT contact_id FROM public.profiles WHERE id = auth.uid();
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Returns project IDs the current user can access (same logic as projects SELECT policy).
+-- Use in child-table RLS to avoid re-evaluating the full projects policy per row.
+CREATE OR REPLACE FUNCTION get_accessible_project_ids()
+RETURNS SETOF UUID AS $$
+  SELECT id FROM public.projects
+  WHERE organization_id = get_user_organization_id()
+  AND (
+    is_user_admin()
+    OR (project_manager_id = auth.uid())
+    OR (created_by_user_id = auth.uid())
+    OR (id IN (
+      SELECT project_id FROM public.project_contacts
+      WHERE contact_id = get_user_contact_id()
+        AND organization_id = get_user_organization_id()
+    ))
+    OR (id IN (
+      SELECT project_id FROM public.project_collaborators
+      WHERE user_id = auth.uid()
+    ))
+  );
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
 -- Gets the email of the currently logged-in user
@@ -1236,6 +1315,8 @@ ALTER TABLE project_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE project_issues ENABLE ROW LEVEL SECURITY;
 ALTER TABLE project_phases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_dependencies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_preferences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE activity_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invitations ENABLE ROW LEVEL SECURITY;
@@ -1522,47 +1603,20 @@ USING (is_current_user_admin());
 -- ============================================================================
 
 -- Contacts SELECT policy
--- Allow users to see contacts they created OR contacts that match their email
--- This enables users to find contacts created by invite_or_add_member function
--- Also allows Admins/PMs to see all contacts
-CREATE POLICY "Users can view their own contacts and contacts with their email"
+-- Simplified to avoid infinite recursion by removing cross-table queries
+-- Users can see contacts in their organization, their own contact, or contacts they created
+CREATE POLICY "Users can view contacts in their organization"
 ON public.contacts
 FOR SELECT
 USING (
-  -- Users can see contacts they created
-  (created_by_user_id = auth.uid())
+  -- Contacts in same organization (primary access method - avoids recursion)
+  organization_id = get_user_organization_id()
   OR
-  -- Users can see contacts that match their email (using helper function)
+  -- Users can see their own contact (by email match, even if org is different - for collaborators)
   (LOWER(email) = LOWER(get_user_email()))
   OR
-  -- Admins and PMs can see all contacts
-  (get_user_role() IN ('Admin', 'PM'))
-  OR
-  -- Anyone can see contacts who share a project with them
-  (
-    get_user_contact_id() IS NOT NULL
-    AND EXISTS (
-      SELECT 1
-      FROM public.project_contacts pc_user
-      JOIN public.project_contacts pc_contact
-        ON pc_contact.project_id = pc_user.project_id
-      WHERE pc_user.contact_id = get_user_contact_id()
-        AND pc_contact.contact_id = contacts.id
-    )
-  )
-  OR
-  -- Project creators/managers can see contacts assigned to their projects
-  EXISTS (
-    SELECT 1
-    FROM public.project_contacts pc_mgr
-    WHERE pc_mgr.contact_id = contacts.id
-      AND pc_mgr.project_id IN (
-        SELECT id
-        FROM public.projects
-        WHERE project_manager_id = auth.uid()
-           OR created_by_user_id = auth.uid()
-      )
-  )
+  -- Users can see contacts they created (even if org is different)
+  (created_by_user_id = auth.uid())
 );
 
 -- Contacts INSERT policy
@@ -1594,7 +1648,7 @@ FOR SELECT
 USING (
   (project_id IS NULL AND (user_id = auth.uid()))
   OR
-  (project_id IN (SELECT id FROM public.projects))
+  (project_id IN (SELECT get_accessible_project_ids()))
 );
 
 -- Calendar events INSERT policy
@@ -1604,7 +1658,7 @@ FOR INSERT
 WITH CHECK (
   (project_id IS NULL AND (user_id = auth.uid()))
   OR
-  (project_id IN (SELECT id FROM public.projects))
+  (project_id IN (SELECT get_accessible_project_ids()))
 );
 
 -- Calendar events UPDATE policy
@@ -1614,7 +1668,7 @@ FOR UPDATE
 USING (
   (project_id IS NULL AND (user_id = auth.uid()))
   OR
-  (project_id IN (SELECT id FROM public.projects))
+  (project_id IN (SELECT get_accessible_project_ids()))
 );
 
 -- Calendar events DELETE policy
@@ -1624,7 +1678,7 @@ FOR DELETE
 USING (
   (project_id IS NULL AND (user_id = auth.uid()))
   OR
-  (project_id IN (SELECT id FROM public.projects))
+  (project_id IN (SELECT get_accessible_project_ids()))
 );
 
 -- ============================================================================
@@ -1664,7 +1718,7 @@ CREATE POLICY "Users can see files for projects they have access to"
 ON public.files
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Files INSERT policy
@@ -1672,7 +1726,7 @@ CREATE POLICY "Users can upload files to accessible projects"
 ON public.files
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Files UPDATE policy
@@ -1680,7 +1734,7 @@ CREATE POLICY "Users can update files for accessible projects"
 ON public.files
 FOR UPDATE
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Files DELETE policy
@@ -1705,7 +1759,7 @@ USING (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1717,7 +1771,7 @@ WITH CHECK (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1767,7 +1821,7 @@ USING (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1779,7 +1833,7 @@ WITH CHECK (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1791,7 +1845,7 @@ USING (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1803,7 +1857,7 @@ USING (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1819,7 +1873,7 @@ USING (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1831,7 +1885,7 @@ WITH CHECK (
   issue_id IN (
     SELECT pi.id 
     FROM public.project_issues pi 
-    WHERE pi.project_id IN (SELECT id FROM public.projects)
+    WHERE pi.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -1876,7 +1930,7 @@ CREATE POLICY "Users can see channels for projects they have access to"
 ON public.message_channels
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Message channels INSERT policy
@@ -1884,7 +1938,7 @@ CREATE POLICY "Users can create channels for accessible projects"
 ON public.message_channels
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Message channels UPDATE policy
@@ -1892,7 +1946,7 @@ CREATE POLICY "Users can update channels for accessible projects"
 ON public.message_channels
 FOR UPDATE
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Message channels DELETE policy
@@ -1917,7 +1971,7 @@ USING (
   channel_id IN (
     SELECT mc.id 
     FROM public.message_channels mc 
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2000,7 +2054,7 @@ USING (
     SELECT m.id 
     FROM public.messages m
     JOIN public.message_channels mc ON m.channel_id = mc.id
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2015,7 +2069,7 @@ WITH CHECK (
     SELECT m.id 
     FROM public.messages m
     JOIN public.message_channels mc ON m.channel_id = mc.id
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2037,7 +2091,7 @@ USING (
   channel_id IN (
     SELECT mc.id 
     FROM public.message_channels mc 
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2051,7 +2105,7 @@ WITH CHECK (
   channel_id IN (
     SELECT mc.id 
     FROM public.message_channels mc 
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2117,7 +2171,7 @@ WITH CHECK (
   channel_id IN (
     SELECT mc.id 
     FROM public.message_channels mc 
-    WHERE mc.project_id IN (SELECT id FROM public.projects)
+    WHERE mc.project_id IN (SELECT get_accessible_project_ids())
   )
 );
 
@@ -2229,7 +2283,7 @@ CREATE POLICY "Users can see issues for projects they have access to"
 ON public.project_issues
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project issues INSERT policy
@@ -2237,7 +2291,7 @@ CREATE POLICY "Users can create issues for accessible projects"
 ON public.project_issues
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project issues UPDATE policy
@@ -2245,7 +2299,7 @@ CREATE POLICY "Users can update issues for accessible projects"
 ON public.project_issues
 FOR UPDATE
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project issues DELETE policy
@@ -2268,7 +2322,7 @@ CREATE POLICY "Users can see phases for projects they have access to"
 ON public.project_phases
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project phases INSERT policy
@@ -2276,7 +2330,7 @@ CREATE POLICY "Users can create phases for accessible projects"
 ON public.project_phases
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project phases UPDATE policy
@@ -2284,7 +2338,7 @@ CREATE POLICY "Users can update phases for accessible projects"
 ON public.project_phases
 FOR UPDATE
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Project phases DELETE policy
@@ -2306,7 +2360,7 @@ CREATE POLICY "Users can see tasks for projects they have access to"
 ON public.tasks
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Tasks INSERT policy
@@ -2314,7 +2368,7 @@ CREATE POLICY "Users can create tasks for accessible projects"
 ON public.tasks
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Tasks UPDATE policy
@@ -2340,6 +2394,100 @@ USING (
     WHERE project_manager_id = auth.uid() OR get_user_role() = 'Admin' OR created_by_user_id = auth.uid()
   )
 );
+
+-- ============================================================================
+-- TASK DEPENDENCIES TABLE POLICIES
+-- ============================================================================
+
+-- Task dependencies SELECT policy
+CREATE POLICY "Users can view task dependencies they have access to"
+ON public.task_dependencies
+FOR SELECT
+USING (
+  task_id IN (SELECT id FROM public.tasks)
+  AND successor_task_id IN (SELECT id FROM public.tasks)
+);
+
+-- Task dependencies INSERT policy
+CREATE POLICY "Users can create task dependencies for accessible tasks"
+ON public.task_dependencies
+FOR INSERT
+WITH CHECK (
+  task_id IN (SELECT id FROM public.tasks)
+  AND successor_task_id IN (SELECT id FROM public.tasks)
+);
+
+-- Task dependencies UPDATE policy
+CREATE POLICY "Users can update task dependencies for accessible tasks"
+ON public.task_dependencies
+FOR UPDATE
+USING (
+  task_id IN (SELECT id FROM public.tasks)
+  AND successor_task_id IN (SELECT id FROM public.tasks)
+);
+
+-- Task dependencies DELETE policy
+CREATE POLICY "Users can delete task dependencies for accessible tasks"
+ON public.task_dependencies
+FOR DELETE
+USING (
+  task_id IN (SELECT id FROM public.tasks)
+  AND successor_task_id IN (SELECT id FROM public.tasks)
+);
+
+-- ============================================================================
+-- PROJECT TEMPLATES TABLE POLICIES
+-- ============================================================================
+
+-- Project templates SELECT policy
+CREATE POLICY "Users can view their organization templates"
+ON public.project_templates
+FOR SELECT
+USING (organization_id = (SELECT get_user_organization_id()));
+
+-- Project templates INSERT policy
+CREATE POLICY "Users can create templates for their organization"
+ON public.project_templates
+FOR INSERT
+WITH CHECK (organization_id = (SELECT get_user_organization_id()));
+
+-- Project templates UPDATE policy
+CREATE POLICY "Users can update their organization templates"
+ON public.project_templates
+FOR UPDATE
+USING (organization_id = (SELECT get_user_organization_id()));
+
+-- Project templates DELETE policy
+CREATE POLICY "Users can delete their organization templates"
+ON public.project_templates
+FOR DELETE
+USING (organization_id = (SELECT get_user_organization_id()));
+
+-- ============================================================================
+-- SCHEDULE IMPORT TEMPLATES TABLE POLICIES
+-- ============================================================================
+
+ALTER TABLE public.schedule_import_templates ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their organization schedule import templates"
+ON public.schedule_import_templates
+FOR SELECT
+USING (organization_id = (SELECT get_user_organization_id()));
+
+CREATE POLICY "Users can create schedule import templates for their organization"
+ON public.schedule_import_templates
+FOR INSERT
+WITH CHECK (organization_id = (SELECT get_user_organization_id()));
+
+CREATE POLICY "Users can update their organization schedule import templates"
+ON public.schedule_import_templates
+FOR UPDATE
+USING (organization_id = (SELECT get_user_organization_id()));
+
+CREATE POLICY "Users can delete their organization schedule import templates"
+ON public.schedule_import_templates
+FOR DELETE
+USING (organization_id = (SELECT get_user_organization_id()));
 
 -- ============================================================================
 -- USER PREFERENCES TABLE POLICIES
@@ -2378,7 +2526,7 @@ CREATE POLICY "Users can see activity for projects they have access to"
 ON public.activity_log
 FOR SELECT
 USING (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Activity log INSERT policy
@@ -2386,7 +2534,7 @@ CREATE POLICY "Users can create activity logs for accessible projects"
 ON public.activity_log
 FOR INSERT
 WITH CHECK (
-  project_id IN (SELECT id FROM public.projects)
+  project_id IN (SELECT get_accessible_project_ids())
 );
 
 -- Activity log UPDATE policy (rarely used, but allow users to update their own logs)
@@ -2570,3 +2718,23 @@ CREATE INDEX IF NOT EXISTS idx_project_issues_organization_id ON project_issues(
 CREATE INDEX IF NOT EXISTS idx_project_phases_organization_id ON project_phases(organization_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_organization_id ON tasks(organization_id);
 CREATE INDEX IF NOT EXISTS idx_activity_log_organization_id ON activity_log(organization_id);
+
+-- Task dependencies indexes
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_task_id ON task_dependencies(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_successor_task_id ON task_dependencies(successor_task_id);
+
+-- View: task_dependencies by project_id (enables parallel Gantt fetch in app)
+CREATE OR REPLACE VIEW task_dependencies_by_project AS
+SELECT td.id, td.task_id, td.successor_task_id, td.dependency_type, td.lag_days, td.created_at, t.project_id
+FROM task_dependencies td
+JOIN tasks t ON t.id = td.task_id;
+
+-- Gantt schedule field indexes on tasks
+CREATE INDEX IF NOT EXISTS idx_tasks_start_date ON tasks(start_date) WHERE start_date IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_is_milestone ON tasks(is_milestone) WHERE is_milestone = true;
+
+-- Project templates indexes
+CREATE INDEX IF NOT EXISTS idx_project_templates_organization_id ON project_templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_project_templates_created_at ON project_templates(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_schedule_import_templates_organization_id ON schedule_import_templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_schedule_import_templates_created_at ON schedule_import_templates(created_at DESC);

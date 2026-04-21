@@ -52,7 +52,7 @@ const DashboardStats = memo(function DashboardStats() {
     return (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             {stats.map((stat, index) => (
-                <div key={index} className={`p-5 rounded-lg border ${getColorClasses(stat.color)}`}>
+                <div key={index} className={`app-card-soft p-5 border ${getColorClasses(stat.color)}`}>
                     <div className="flex items-center justify-between">
                         <div>
                             <p className="text-xs font-medium opacity-75 mb-1.5 uppercase tracking-wide">{stat.title}</p>
@@ -61,7 +61,7 @@ const DashboardStats = memo(function DashboardStats() {
                                 <p className="text-xs opacity-75 mt-1">of {stat.total} total</p>
                             )}
                         </div>
-                        <div className="p-2.5 rounded-lg bg-white bg-opacity-50">
+                        <div className="p-2.5 rounded-lg bg-white/50">
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={stat.icon} />
                             </svg>

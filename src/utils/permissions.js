@@ -152,13 +152,32 @@ export async function canViewFinancials(supabase, userId, organizationId) {
 }
 
 /**
- * Check if user can view reports
+ * Check if user can edit tasks
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
  * @param {string} userId - User ID
  * @param {string} organizationId - Organization ID
- * @returns {Promise<boolean>} True if user can view reports
+ * @returns {Promise<boolean>} True if user can edit tasks
  */
-export async function canViewReports(supabase, userId, organizationId) {
-  return hasPermission(supabase, userId, 'can_view_reports', organizationId);
+export async function canEditTasks(supabase, userId, organizationId) {
+  return hasPermission(supabase, userId, 'can_edit_tasks', organizationId);
 }
+
+/**
+ * Check if user can delete tasks
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
+ * @param {string} userId - User ID
+ * @param {string} organizationId - Organization ID
+ * @returns {Promise<boolean>} True if user can delete tasks
+ */
+export async function canDeleteTasks(supabase, userId, organizationId) {
+  return hasPermission(supabase, userId, 'can_delete_tasks', organizationId);
+}
+
+/**
+ * View activity feed, notifications, and full activity history (project + org where applicable)
+ */
+export async function canViewActivityHistory(supabase, userId, organizationId) {
+  return hasPermission(supabase, userId, 'can_view_activity_history', organizationId);
+}
+
 

@@ -1,6 +1,13 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * My Day sidebar for web app. Root version uses i18n for locale; this one uses en-US.
+ * TODO: Refactor - Align with root (add i18n) or document web-only behavior.
+ */
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAppContext } from '../context/AppContext';
 import Avatar from './Avatar';
+import { formatActivityLine } from '../utils/formatActivityLine';
+import { activityLineT } from '../utils/activityLineT';
+import PermissionGuard from './PermissionGuard';
 
 function MyDaySidebar() {
     const { state } = useAppContext();
@@ -11,23 +18,35 @@ function MyDaySidebar() {
         setLastUpdate(new Date());
     }, [state.tasks.length, state.calendarEvents.length]);
 
-    const myTodos = state.tasks.filter(task => 
-        task.assignee_id === state.user.id && !task.completed
-    );
+    // FIXED: assignee_id stores contacts.id, NOT auth.uid()
+    // Use state.userContactId (resolved from profiles.contact_id) for correct matching
+    // Guard: if userContactId is null (no linked contact yet), show no tasks rather than
+    // accidentally matching all unassigned tasks (where assignee_id is also null)
+    const myTodos = state.userContactId
+        ? state.tasks.filter(task => task.assignee_id === state.userContactId && !task.completed)
+        : [];
 
     const today = new Date();
     const todayEvents = state.calendarEvents.filter(event => 
         new Date(event.start_time).toDateString() === today.toDateString()
     );
 
+    const projectNamesById = useMemo(() => {
+        const m = {};
+        (state.projects || []).forEach((p) => {
+            m[p.id] = p.name;
+        });
+        return m;
+    }, [state.projects]);
+
     // Get recent activity from the database (filtered by RLS)
-    const recentActivity = state.activityLog.slice(0, 4).map(activity => ({
+    const recentActivity = (state.activityLog || []).slice(0, 4).map(activity => ({
         id: activity.id,
         user: { 
             name: activity.user_name, 
             avatar: activity.user_avatar || null // null means use default Avatar component
-        }, 
-        action: activity.action,
+        },
+        description: formatActivityLine(activity, activityLineT, { projectNamesById }),
         time: formatTimeAgo(activity.created_at)
     }));
 
@@ -66,20 +85,21 @@ function MyDaySidebar() {
                     )) : <p className="text-sm text-center py-3 text-gray-400">No tasks assigned to you.</p>}
                 </div>
             </div>
+            <PermissionGuard permission="can_view_activity_history">
             <div>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">RECENT ACTIVITY</h3>
                  <div className="space-y-2.5">
                     {recentActivity.length > 0 ? recentActivity.map(activity => (
                         <div key={activity.id} className="flex items-start gap-2.5 text-sm">
                             {activity.user.avatar ? (
-                                <img src={activity.user.avatar} alt={activity.user.name} className="w-7 h-7 rounded-full flex-shrink-0" />
+                                <img src={activity.user.avatar} alt={activity.user.name} className="w-7 h-7 rounded-full shrink-0" />
                             ) : (
-                                <div className="flex-shrink-0">
+                                <div className="shrink-0">
                                     <Avatar name={activity.user.name} size="sm" />
                                 </div>
                             )}
                             <div className="flex-1 min-w-0">
-                                <p className="text-gray-700"><span className="font-semibold">{activity.user.name}</span> {activity.action}</p>
+                                <p className="text-gray-700"><span className="font-semibold">{activity.user.name}</span> {activity.description}</p>
                                 <p className="text-xs text-gray-400 mt-0.5">{activity.time}</p>
                             </div>
                         </div>
@@ -88,6 +108,7 @@ function MyDaySidebar() {
                     )}
                 </div>
             </div>
+            </PermissionGuard>
             <div>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">TODAY'S CALENDAR ({todayEvents.length})</h3>
                  <div className="space-y-2.5">
@@ -124,7 +145,7 @@ function MyDaySidebar() {
                         return (
                             <div key={event.id} className="bg-gray-50 rounded-lg p-2.5 border border-gray-200">
                                 <div className="flex items-start gap-2.5">
-                                    <div className="flex-shrink-0 mt-0.5">
+                                    <div className="shrink-0 mt-0.5">
                                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="#3B82F6" className="w-4 h-4">
                                             <path strokeLinecap="round" strokeLinejoin="round" d={getEventIcon()} />
                                         </svg>

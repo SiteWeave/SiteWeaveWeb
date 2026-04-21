@@ -1,17 +1,28 @@
+/**
+ * App context for web app. Mirrors root src/context/AppContext.jsx with web-specific behavior.
+ * TODO: Refactor - Establish single source of truth (e.g. share via packages/ or document desktop vs web feature flags).
+ */
 import React, { createContext, useContext, useEffect, useReducer, useState, useRef } from 'react';
-import { createSupabaseClient } from '@siteweave/core-logic';
 import supabaseElectronAuth from '../utils/supabaseElectronAuth';
+import { supabase as supabaseClient } from '../supabaseClient';
+import { dedupeTasksById } from '../utils/taskDedupe';
+import {
+  analyzeSemanticTaskDuplicates,
+  analyzeTaskDuplicates,
+  logSemanticTaskDuplicateReport,
+  logTaskDuplicateReport,
+} from '../utils/taskDuplicateDiagnostics';
 
-// --- SUPABASE CLIENT ---
+// Single browser client — must match LoginView, useSession, etc.
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-console.log('Environment variables loaded:');
-console.log('SUPABASE_URL:', SUPABASE_URL ? 'Present' : 'Missing');
-console.log('SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY ? 'Present' : 'Missing');
-
-// Use shared Supabase client creation
-const supabaseClient = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+if (import.meta.env.DEV) {
+  console.log('Environment variables loaded:', {
+    SUPABASE_URL: SUPABASE_URL ? 'present' : 'missing',
+    SUPABASE_ANON_KEY: SUPABASE_ANON_KEY ? 'present' : 'missing',
+  });
+}
 
 export { supabaseClient };
 
@@ -20,6 +31,17 @@ export const AppContext = createContext();
 // Helper functions for sessionStorage persistence
 const STORAGE_KEY = 'siteweave_app_state';
 const STORAGE_USER_KEY = 'siteweave_user_id';
+
+/** Stable project shape for UI/debug (e.g. start_date always present, not omitted by realtime payloads). */
+function normalizeProjectRecord(p) {
+  if (!p || typeof p !== 'object') return p;
+  return { ...p, start_date: p.start_date ?? null };
+}
+
+function normalizeProjectsArray(list) {
+  if (!Array.isArray(list)) return list;
+  return list.map(normalizeProjectRecord);
+}
 
 const saveStateToStorage = (state) => {
   try {
@@ -65,7 +87,7 @@ const loadStateFromStorage = (currentUserId) => {
     }
     
     return {
-      projects: parsed.projects || [],
+      projects: normalizeProjectsArray(parsed.projects || []),
       contacts: parsed.contacts || [],
       tasks: parsed.tasks || [],
       files: parsed.files || [],
@@ -91,6 +113,7 @@ const getInitialState = () => {
     selectedChannelId: null,
     projects: [], contacts: [], tasks: [], files: [], calendarEvents: [], messageChannels: [], messages: [], activityLog: [],
     user: null, // Changed from hardcoded user to null for proper auth
+    userContactId: null, // The user's linked contact_id (from profiles table) — used for matching assignee_id on tasks
     userPreferences: null, // Add user preferences for onboarding
     currentOrganization: null, // Current organization context
     userRole: null, // User's role with permissions
@@ -115,41 +138,68 @@ const initialState = getInitialState();
 function appReducer(state, action) {
   let newState;
   switch (action.type) {
-    case 'SET_DATA': 
-      // Preserve current activeView if not provided in payload (to prevent resetting on data refresh)
-      newState = { 
-        ...state, 
-        ...action.payload, 
+    case 'SET_DATA': {
+      const payload = { ...action.payload };
+      if (payload.projects !== undefined) {
+        payload.projects = normalizeProjectsArray(payload.projects);
+      }
+      newState = {
+        ...state,
+        ...payload,
         activeView: action.payload.activeView !== undefined ? action.payload.activeView : state.activeView,
-        isLoading: false 
+        isLoading: false,
       };
-      // Save to sessionStorage for quick restore on refresh
       saveStateToStorage(newState);
       return newState;
+    }
     case 'SET_VIEW': 
       newState = { ...state, activeView: action.payload };
       saveStateToStorage(newState);
       return newState;
     case 'SET_PROJECT': return { ...state, selectedProjectId: action.payload };
     case 'SET_CHANNEL': return { ...state, selectedChannelId: action.payload, activeView: 'Messages' };
-    case 'SET_USER': return { ...state, user: action.payload };
+    case 'SET_USER': 
+      // When user is cleared (logout), also clear userContactId to prevent stale data
+      return { ...state, user: action.payload, userContactId: action.payload ? state.userContactId : null };
+    case 'SET_USER_CONTACT_ID': return { ...state, userContactId: action.payload };
     case 'SET_AUTH_LOADING': return { ...state, authLoading: action.payload };
     case 'ADD_PROJECT': 
-      newState = { ...state, projects: [...state.projects, action.payload] };
+      newState = { ...state, projects: [...state.projects, normalizeProjectRecord(action.payload)] };
       saveStateToStorage(newState);
       return newState;
     case 'UPDATE_PROJECT': 
-      newState = { ...state, projects: state.projects.map(p => p.id === action.payload.id ? action.payload : p) };
+      newState = {
+        ...state,
+        projects: state.projects.map((p) =>
+          p.id === action.payload.id ? normalizeProjectRecord({ ...p, ...action.payload }) : p,
+        ),
+      };
       saveStateToStorage(newState);
       return newState;
     case 'DELETE_PROJECT': 
       newState = { ...state, projects: state.projects.filter(p => p.id !== action.payload) };
       saveStateToStorage(newState);
       return newState;
-    case 'ADD_TASK': return { ...state, tasks: [...state.tasks, action.payload] };
+    case 'ADD_TASK': {
+      const id = action.payload?.id;
+      if (id != null) {
+        const key = String(id);
+        const idx = state.tasks.findIndex((t) => t?.id != null && String(t.id) === key);
+        if (idx >= 0) {
+          const next = state.tasks.slice();
+          next[idx] = action.payload;
+          return { ...state, tasks: next };
+        }
+      }
+      return { ...state, tasks: [...state.tasks, action.payload] };
+    }
     case 'UPDATE_TASK': return { ...state, tasks: state.tasks.map(task => task.id === action.payload.id ? action.payload : task) };
     case 'DELETE_TASK': return { ...state, tasks: state.tasks.filter(task => task.id !== action.payload) };
     case 'REORDER_TASKS': return { ...state, tasks: action.payload };
+    case 'SET_TASKS':
+      newState = { ...state, tasks: dedupeTasksById(action.payload) };
+      saveStateToStorage(newState);
+      return newState;
     case 'ADD_FILE': return { ...state, files: [...state.files, action.payload] };
     case 'ADD_EVENT': return { ...state, calendarEvents: [...state.calendarEvents, action.payload] };
     case 'UPDATE_EVENT': return { 
@@ -162,7 +212,6 @@ function appReducer(state, action) {
       ...state, 
       calendarEvents: state.calendarEvents.filter(event => event.id !== action.payload) 
     };
-<<<<<<< HEAD
     case 'ADD_MESSAGE': {
       // Prevent duplicates
       const exists = state.messages.some(m => m.id === action.payload.id);
@@ -185,10 +234,6 @@ function appReducer(state, action) {
       const filteredMessages = state.messages.filter(m => m.channel_id !== channelId);
       return { ...state, messages: [...filteredMessages, ...newMessages] };
     }
-=======
-    case 'ADD_MESSAGE': return { ...state, messages: [...state.messages, action.payload] };
-    case 'UPDATE_MESSAGE': return { ...state, messages: state.messages.map(m => m.id === action.payload.id ? action.payload : m) };
->>>>>>> aa0293334131d3c7e8b85965aa6dc815849ebeb6
     case 'ADD_CHANNEL': return { ...state, messageChannels: [...state.messageChannels, action.payload] };
     case 'ADD_ACTIVITY': return { ...state, activityLog: [action.payload, ...state.activityLog].slice(0, 50) }; // Keep latest 50
     case 'ADD_CONTACT': {
@@ -218,8 +263,8 @@ function appReducer(state, action) {
       contacts: state.contacts.filter(contact => contact.id !== action.payload) 
     };
     case 'ADD_PROJECT_CONTACT': {
-      const contactId = action.payload.contact_id || action.payload.contact_id;
-      const projectId = action.payload.project_id || action.payload.project_id;
+      const contactId = action.payload.contact_id;
+      const projectId = action.payload.project_id;
       
       // Check if contact exists in state
       const contactExists = state.contacts.some(c => c.id === contactId);
@@ -268,7 +313,7 @@ function appReducer(state, action) {
     case 'SET_COLLABORATOR_STATUS': return { 
       ...state, 
       isProjectCollaborator: action.payload.isCollaborator,
-      collaborationProjects: action.payload.projects || []
+      collaborationProjects: normalizeProjectsArray(action.payload.projects || []),
     };
     default: return state;
   }
@@ -277,7 +322,8 @@ function appReducer(state, action) {
 export const AppProvider = ({ children }) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const currentActiveViewRef = useRef(state.activeView);
-  
+  const taskDupWatchSigRef = useRef('');
+
   // Keep ref in sync with state
   useEffect(() => {
     currentActiveViewRef.current = state.activeView;
@@ -289,31 +335,42 @@ export const AppProvider = ({ children }) => {
       window.__SITEWEAVE_DEBUG__ = {
         getState: () => state,
         getSupabase: () => supabaseClient,
-        clearSetupWizard: (userId) => {
-          if (userId) {
-            localStorage.removeItem(`setup_complete_${userId}`);
-            console.log('Setup wizard flag cleared for user:', userId);
-          } else if (state.user?.id) {
-            localStorage.removeItem(`setup_complete_${state.user.id}`);
-            console.log('Setup wizard flag cleared for current user');
+        clearSetupWizard: async () => {
+          const orgId = state.currentOrganization?.id;
+          if (!orgId) {
+            console.log('No current organization — cannot reset setup wizard');
+            return;
+          }
+          const { error } = await supabaseClient
+            .from('organizations')
+            .update({ setup_wizard_completed_at: null })
+            .eq('id', orgId);
+          if (error) {
+            console.error('clearSetupWizard failed:', error);
           } else {
-            console.log('No user ID provided or user not logged in');
+            console.log('organizations.setup_wizard_completed_at cleared for org', orgId);
           }
         },
         checkSetupWizard: () => {
-          if (state.user?.id) {
-            const setupComplete = localStorage.getItem(`setup_complete_${state.user.id}`);
-            console.log('Setup wizard status:', {
-              userId: state.user.id,
-              setupComplete: setupComplete,
-              userRole: state.userRole?.name,
-              canManageTeam: state.userRole?.permissions?.can_manage_team
-            });
-            return { setupComplete: !!setupComplete, userRole: state.userRole };
-          } else {
+          if (!state.user?.id) {
             console.log('No user logged in');
             return null;
           }
+          const info = {
+            userId: state.user.id,
+            userRole: state.userRole?.name,
+            created_by_user_id: state.currentOrganization?.created_by_user_id,
+            isFoundingAdmin:
+              state.currentOrganization?.created_by_user_id != null &&
+              state.currentOrganization.created_by_user_id === state.user.id,
+            setup_wizard_completed_at: state.currentOrganization?.setup_wizard_completed_at,
+            wizardWouldShow:
+              state.userRole?.name === 'Org Admin' &&
+              state.currentOrganization?.created_by_user_id === state.user.id &&
+              !state.currentOrganization?.setup_wizard_completed_at
+          };
+          console.log('Setup wizard status:', info);
+          return info;
         },
         getOrganization: () => {
           console.log('Current organization:', state.currentOrganization);
@@ -322,10 +379,58 @@ export const AppProvider = ({ children }) => {
         getUser: () => {
           console.log('Current user:', state.user);
           return state.user;
-        }
+        },
+        /** Pass nothing to analyze current `state.tasks`, or pass any task array. */
+        analyzeTaskDuplicates: (tasks) => analyzeTaskDuplicates(tasks ?? state.tasks),
+        /** Log duplicate task ids (array indices, text, project_id). Dev only. */
+        inspectTaskDuplicates: () => logTaskDuplicateReport(state.tasks, 'state.tasks'),
+        /** Log automatically when duplicate ids appear or change. Call with `false` to stop. */
+        enableTaskDuplicateWatch: (on = true) => {
+          window.__SITEWEAVE_TASK_DUP_WATCH__ = !!on;
+          console.log(
+            on
+              ? '[task-dup-watch] ON — logs when duplicate ids appear or change (dev only).'
+              : '[task-dup-watch] OFF.',
+          );
+        },
+        /** Same title + phase + start_date but different task ids. `projectId` optional — defaults to selected project; omit both to scan all tasks. */
+        analyzeSemanticTaskDuplicates: (tasks, projectId) => {
+          const list = tasks ?? state.tasks;
+          let pid = projectId;
+          if (pid === undefined || pid === null || pid === '') {
+            pid = state.selectedProjectId ?? null;
+          }
+          return analyzeSemanticTaskDuplicates(list, pid);
+        },
+        inspectSemanticTaskDuplicates: (projectId) => {
+          const tasks = state.tasks || [];
+          let pid = projectId;
+          if (pid === undefined || pid === null || pid === '') {
+            pid = state.selectedProjectId ?? null;
+          }
+          return logSemanticTaskDuplicateReport(tasks, pid, 'state.tasks');
+        },
       };
     }
   }, [state]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !import.meta.env.DEV) return;
+    if (!window.__SITEWEAVE_TASK_DUP_WATCH__) return;
+    const report = analyzeTaskDuplicates(state.tasks || []);
+    const sig = report.duplicateGroups
+      .map((g) => `${g.id}:${g.count}`)
+      .sort()
+      .join('|');
+    if (report.duplicateGroups.length === 0) {
+      taskDupWatchSigRef.current = '';
+      return;
+    }
+    if (sig === taskDupWatchSigRef.current) return;
+    taskDupWatchSigRef.current = sig;
+    console.warn('[task-dup-watch] Duplicate task ids detected in state.tasks');
+    logTaskDuplicateReport(state.tasks, 'state.tasks (watch)');
+  }, [state.tasks]);
 
   useEffect(() => {
     // Check for existing session
@@ -350,8 +455,10 @@ export const AppProvider = ({ children }) => {
             const activeViewToUse = currentActiveViewRef.current && currentActiveViewRef.current !== 'Dashboard' 
               ? currentActiveViewRef.current 
               : (cachedData.activeView || 'Dashboard');
+            // Omit tasks so we don't overwrite in-memory tasks loaded by project view
+            const { tasks: _omitTasks, ...rest } = cachedData;
             dispatch({ type: 'SET_DATA', payload: { 
-              ...cachedData, 
+              ...rest, 
               activeView: activeViewToUse,
               isLoading: false 
             } });
@@ -390,73 +497,7 @@ export const AppProvider = ({ children }) => {
             sessionStorage.removeItem(STORAGE_USER_KEY);
           } else if (session?.user) {
             dispatch({ type: 'SET_USER', payload: session.user });
-<<<<<<< HEAD
-            
-            // Check for pending invitation in user metadata and complete it
-            const pendingInvitationId = session.user.user_metadata?.pending_invitation_id;
-            if (pendingInvitationId && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
-              try {
-                const pendingOrgId = session.user.user_metadata?.pending_organization_id;
-                const pendingRoleId = session.user.user_metadata?.pending_role_id;
-                const pendingContactId = session.user.user_metadata?.pending_contact_id;
-                
-                if (pendingOrgId) {
-                  console.log('Completing pending invitation:', pendingInvitationId);
-                  
-                  // Update profile with organization
-                  const { error: profileError } = await supabaseClient
-                    .from('profiles')
-                    .update({
-                      organization_id: pendingOrgId,
-                      role_id: pendingRoleId || null,
-                      contact_id: pendingContactId || null
-                    })
-                    .eq('id', session.user.id);
-
-                  if (!profileError) {
-                    // Mark invitation as accepted
-                    await supabaseClient
-                      .from('invitations')
-                      .update({
-                        status: 'accepted',
-                        accepted_at: new Date().toISOString()
-                      })
-                      .eq('id', pendingInvitationId);
-
-                    // Clear pending invitation from metadata
-                    await supabaseClient.auth.updateUser({
-                      data: {
-                        pending_invitation_id: null,
-                        pending_organization_id: null,
-                        pending_role_id: null,
-                        pending_contact_id: null
-                      }
-                    });
-
-                    console.log('Pending invitation completed successfully');
-                  } else {
-                    console.error('Error completing pending invitation:', profileError);
-                  }
-                }
-              } catch (pendingErr) {
-                console.error('Error handling pending invitation:', pendingErr);
-                // Don't block login if this fails
-              }
-=======
-            // Restore cached data immediately when user is set, but preserve current activeView
-            const cachedData = loadStateFromStorage(session.user.id);
-            if (cachedData) {
-              // Preserve current activeView if it's already set (user is navigating)
-              const activeViewToUse = currentActiveViewRef.current && currentActiveViewRef.current !== 'Dashboard' 
-                ? currentActiveViewRef.current 
-                : (cachedData.activeView || 'Dashboard');
-              dispatch({ type: 'SET_DATA', payload: { 
-                ...cachedData, 
-                activeView: activeViewToUse,
-                isLoading: false 
-              } });
->>>>>>> aa0293334131d3c7e8b85965aa6dc815849ebeb6
-            }
+            // Do not restore cache here (e.g. on token refresh) so we don't overwrite in-memory state like project tasks
           } else {
             dispatch({ type: 'SET_USER', payload: null });
             // Clear cached data on logout
@@ -722,6 +763,11 @@ export const AppProvider = ({ children }) => {
             contactId = finalProfile.contact_id;
           }
           
+          // Store the user's contact_id in global state so components can match against assignee_id
+          if (contactId) {
+            dispatch({ type: 'SET_USER_CONTACT_ID', payload: contactId });
+          }
+          
           // Load organization and user role
           const { data: profileWithOrg } = await supabaseClient
             .from('profiles')
@@ -809,7 +855,21 @@ export const AppProvider = ({ children }) => {
           // The RLS policy allows:
           // - Organization members: projects in their organization
           // - Project collaborators: specific projects they're invited to
-          const [{ data: projects }, { data: tasks }, { data: files }, {data: calendarEvents}, {data: messageChannels}, {data: messages}, { data: userPreferences, error: userPrefsError }, { data: activityLog }] = await Promise.all([
+          const fetchActivityLogWeb = async () => {
+            let q = supabaseClient
+              .from('activity_log')
+              .select('*')
+              .order('created_at', { ascending: false })
+              .limit(50);
+            if (organization?.id) {
+              q = q.eq('organization_id', organization.id);
+            }
+            const { data, error: alErr } = await q;
+            if (alErr) console.warn('activity_log fetch:', alErr.message);
+            return data || [];
+          };
+
+          const [{ data: projects }, { data: tasks }, { data: files }, {data: calendarEvents}, {data: messageChannels}, {data: messages}, { data: userPreferences, error: userPrefsError }, activityLog] = await Promise.all([
             supabaseClient.from('projects').select('*'),
             supabaseClient.from('tasks').select('*'),
             supabaseClient.from('files').select('*'),
@@ -818,7 +878,7 @@ export const AppProvider = ({ children }) => {
             // Don't load all messages initially - load per channel when needed (MVP pattern)
             Promise.resolve({ data: [] }),
             supabaseClient.from('user_preferences').select('*').eq('user_id', state.user.id).maybeSingle(),
-            supabaseClient.from('activity_log').select('*').order('created_at', { ascending: false }).limit(50)
+            fetchActivityLogWeb()
           ]);
           
           // RLS policy automatically filters projects based on user role
@@ -874,8 +934,6 @@ export const AppProvider = ({ children }) => {
                 return contact;
               });
             }
-            
-            console.log('Loaded virtual contacts:', finalContacts.length);
           } catch (error) {
             console.error('Error fetching virtual contacts:', error);
             finalContacts = [];
@@ -921,13 +979,13 @@ export const AppProvider = ({ children }) => {
           dispatch({ type: 'DELETE_PROJECT', payload: payload.old.id });
         }
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const filesSubscription = supabaseClient.channel('public:files')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'files' }, (payload) => {
         dispatch({ type: 'ADD_FILE', payload: payload.new });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const calendarEventsSubscription = supabaseClient.channel('public:calendar_events')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'calendar_events' }, (payload) => {
@@ -939,7 +997,7 @@ export const AppProvider = ({ children }) => {
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'calendar_events' }, (payload) => {
         dispatch({ type: 'DELETE_EVENT', payload: payload.old.id });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const contactsSubscription = supabaseClient.channel('public:contacts')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contacts' }, async (payload) => {
@@ -973,7 +1031,7 @@ export const AppProvider = ({ children }) => {
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'contacts' }, (payload) => {
         dispatch({ type: 'DELETE_CONTACT', payload: payload.old.id });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const projectContactsSubscription = supabaseClient.channel('public:project_contacts')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'project_contacts' }, async (payload) => {
@@ -996,21 +1054,21 @@ export const AppProvider = ({ children }) => {
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'project_contacts' }, (payload) => {
         dispatch({ type: 'REMOVE_PROJECT_CONTACT', payload: payload.old });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
     
     const tasksSubscription = supabaseClient.channel('public:tasks')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, async (payload) => {
         if (payload.eventType === 'INSERT') {
-          const { data: updatedTask } = await supabaseClient.from('tasks').select('*, contacts(name, avatar_url)').eq('id', payload.new.id).single();
+          const { data: updatedTask } = await supabaseClient.from('tasks').select('*, contacts!fk_tasks_assignee_id(name, avatar_url)').eq('id', payload.new.id).single();
           if (updatedTask) dispatch({ type: 'ADD_TASK', payload: updatedTask });
         } else if (payload.eventType === 'UPDATE') {
-          const { data: updatedTask } = await supabaseClient.from('tasks').select('*, contacts(name, avatar_url)').eq('id', payload.new.id).single();
+          const { data: updatedTask } = await supabaseClient.from('tasks').select('*, contacts!fk_tasks_assignee_id(name, avatar_url)').eq('id', payload.new.id).single();
           if (updatedTask) dispatch({ type: 'UPDATE_TASK', payload: updatedTask });
         } else if (payload.eventType === 'DELETE') {
           dispatch({ type: 'DELETE_TASK', payload: payload.old.id });
         }
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     // Messages are now loaded per-channel in MessagesView component (MVP pattern)
     // This global subscription is kept for backwards compatibility but MessagesView handles its own subscription
@@ -1036,13 +1094,13 @@ export const AppProvider = ({ children }) => {
         }
         dispatch({ type: 'UPDATE_MESSAGE', payload: updatedMessage });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const messageChannelsSubscription = supabaseClient.channel('public:message_channels')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_channels' }, (payload) => {
         dispatch({ type: 'ADD_CHANNEL', payload: payload.new });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const userPreferencesSubscription = supabaseClient.channel('public:user_preferences')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_preferences' }, (payload) => {
@@ -1050,13 +1108,13 @@ export const AppProvider = ({ children }) => {
           dispatch({ type: 'SET_USER_PREFERENCES', payload: payload.new });
         }
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
     const activityLogSubscription = supabaseClient.channel('public:activity_log')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_log' }, (payload) => {
         dispatch({ type: 'ADD_ACTIVITY', payload: payload.new });
       })
-      .subscribe();
+      .subscribe(() => {}); // Silently handle subscription status
 
       return () => supabaseClient.removeAllChannels();
     }

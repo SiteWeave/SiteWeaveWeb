@@ -5,8 +5,10 @@ import { duplicateProject } from '../utils/projectDuplicationService';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from './LoadingSpinner';
 import DateDropdown from './DateDropdown';
+import DateRangePicker from './DateRangePicker';
 import Avatar from './Avatar';
 import PermissionGuard from './PermissionGuard';
+import { addDaysIso, localDateIso } from '../utils/dateHelpers';
 
 function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
     const { state } = useAppContext();
@@ -15,6 +17,7 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
     const [address, setAddress] = useState('');
     const [project_type, setProjectType] = useState('Residential');
     const [status, setStatus] = useState('Planning');
+    const [start_date, setStartDate] = useState('');
     const [due_date, setDueDate] = useState('');
     const [next_milestone, setNextMilestone] = useState('');
     const [selectedContacts, setSelectedContacts] = useState([]);
@@ -23,7 +26,12 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
     const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
     const [duplicateName, setDuplicateName] = useState('');
     const [duplicateStartDate, setDuplicateStartDate] = useState('');
+    const [duplicateAddress, setDuplicateAddress] = useState('');
+    const [duplicateProjectNumber, setDuplicateProjectNumber] = useState('');
     const [isDuplicating, setIsDuplicating] = useState(false);
+    const [taskNotifUseOrgDefaults, setTaskNotifUseOrgDefaults] = useState(true);
+    const [taskNotifEnabled, setTaskNotifEnabled] = useState(true);
+    const [taskNotifLeadDays, setTaskNotifLeadDays] = useState('14, 7');
 
     const isEditMode = !!project;
     
@@ -48,8 +56,15 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
             setAddress(project.address || '');
             setProjectType(project.project_type || 'Residential');
             setStatus(project.status || 'Planning');
+            setStartDate(project.start_date || '');
             setDueDate(project.due_date || '');
             setNextMilestone(project.next_milestone || '');
+            setTaskNotifUseOrgDefaults(project.task_notifications_use_org_defaults !== false);
+            setTaskNotifEnabled(project.task_start_notifications_enabled !== false);
+            const leadDays = Array.isArray(project.task_start_notification_lead_days) && project.task_start_notification_lead_days.length > 0
+                ? project.task_start_notification_lead_days
+                : [14, 7];
+            setTaskNotifLeadDays(leadDays.join(', '));
             
             // Load existing project contacts
             const existingContacts = state.contacts
@@ -62,10 +77,23 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
             setSelectedContacts(existingContacts);
         } else {
             // Reset when creating new project
+            setStartDate('');
             setSelectedContacts([]);
             setEmailAddresses([]);
+            setTaskNotifUseOrgDefaults(true);
+            setTaskNotifEnabled(true);
+            setTaskNotifLeadDays('14, 7');
         }
     }, [project, state.contacts]);
+
+    const parseLeadDays = (raw) => {
+        const values = String(raw || '')
+            .split(',')
+            .map((part) => parseInt(part.trim(), 10))
+            .filter((num) => Number.isFinite(num) && num >= 0 && num <= 365);
+        const deduped = Array.from(new Set(values));
+        return deduped.length > 0 ? deduped.sort((a, b) => b - a) : [14, 7];
+    };
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -79,8 +107,12 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
             address,
             project_type,
             status,
+            start_date: start_date || null,
             due_date: due_date || null,
             next_milestone: next_milestone || null,
+            task_notifications_use_org_defaults: taskNotifUseOrgDefaults,
+            task_start_notifications_enabled: taskNotifUseOrgDefaults ? null : taskNotifEnabled,
+            task_start_notification_lead_days: taskNotifUseOrgDefaults ? null : parseLeadDays(taskNotifLeadDays),
             selectedContacts: ownerAugmentedContacts,
             emailAddresses: emailAddresses
         };
@@ -149,7 +181,9 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                 project.id,
                 duplicateName,
                 state.currentOrganization.id,
-                duplicateStartDate
+                duplicateStartDate,
+                { address: duplicateAddress || undefined, project_number: duplicateProjectNumber || undefined },
+                state.user?.id
             );
 
             if (result.success) {
@@ -169,6 +203,44 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
         }
     };
 
+    const datePresets = (
+        <>
+            <button
+                type="button"
+                onClick={() => {
+                    const t = localDateIso();
+                    setStartDate(t);
+                    setDueDate(t);
+                }}
+                className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+                Today
+            </button>
+            <button
+                type="button"
+                onClick={() => {
+                    const t = localDateIso();
+                    setStartDate((s) => s || t);
+                    setDueDate(addDaysIso(t, 7) || t);
+                }}
+                className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+                +1 week
+            </button>
+            <button
+                type="button"
+                onClick={() => {
+                    const t = localDateIso();
+                    setStartDate((s) => s || t);
+                    setDueDate(addDaysIso(t, 14) || t);
+                }}
+                className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+                +2 weeks
+            </button>
+        </>
+    );
+
     if (showDuplicateDialog) {
         return (
             <div className="fixed inset-0 backdrop-blur-[2px] bg-white/20 flex items-center justify-center z-50">
@@ -185,6 +257,14 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                             required 
                         />
                     </div>
+                    <div className="mb-4">
+                        <label className="block text-sm font-semibold mb-1 text-gray-600">Address (optional)</label>
+                        <input type="text" value={duplicateAddress} onChange={e => setDuplicateAddress(e.target.value)} className="w-full p-2 border rounded-lg" placeholder="Same as original if blank" />
+                    </div>
+                    <div className="mb-4">
+                        <label className="block text-sm font-semibold mb-1 text-gray-600">Project Number (optional)</label>
+                        <input type="text" value={duplicateProjectNumber} onChange={e => setDuplicateProjectNumber(e.target.value)} className="w-full p-2 border rounded-lg" placeholder="Same as original if blank" />
+                    </div>
                     <DateDropdown 
                         value={duplicateStartDate} 
                         onChange={setDuplicateStartDate} 
@@ -193,7 +273,7 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                         required
                     />
                     <p className="text-sm text-gray-600 mb-6">
-                        This will create a copy of the project structure (phases, tasks) with dates adjusted based on the new start date. 
+                        This will create a copy of the project structure (phases, tasks, dependencies) with dates adjusted. 
                         Transactional data (comments, files, activity logs) will not be copied.
                     </p>
                     <div className="flex gap-3">
@@ -230,6 +310,8 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                                 type="button"
                                 onClick={() => {
                                     setDuplicateName(`${project.name} - Copy`);
+                                    setDuplicateAddress(project.address || '');
+                                    setDuplicateProjectNumber(project.project_number || '');
                                     setDuplicateStartDate('');
                                     setShowDuplicateDialog(true);
                                 }}
@@ -268,15 +350,56 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                         </select>
                         <p className="text-xs text-gray-500 mt-1">Status color will be automatically determined</p>
                     </div>
-                    <DateDropdown 
-                        value={due_date} 
-                        onChange={setDueDate} 
-                        label="Due Date"
+                    <DateRangePicker
+                        label="Schedule"
+                        startValue={start_date}
+                        endValue={due_date}
+                        onChange={({ start, end }) => {
+                            setStartDate(start);
+                            setDueDate(end);
+                        }}
+                        presets={datePresets}
                         className="mb-4"
                     />
                     <div className="mb-6">
                         <label className="block text-sm font-semibold mb-1 text-gray-600">Next Milestone</label>
                         <input type="text" value={next_milestone} onChange={e => setNextMilestone(e.target.value)} className="w-full p-2 border rounded-lg" placeholder="e.g., Foundation Complete" />
+                    </div>
+
+                    <div className="mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                        <h3 className="text-sm font-semibold text-gray-800 mb-2">Smart Task Notifications</h3>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 mb-2">
+                            <input
+                                type="checkbox"
+                                checked={taskNotifUseOrgDefaults}
+                                onChange={(e) => setTaskNotifUseOrgDefaults(e.target.checked)}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            Use organization defaults
+                        </label>
+                        {!taskNotifUseOrgDefaults && (
+                            <div className="space-y-2">
+                                <label className="flex items-center gap-2 text-sm text-gray-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={taskNotifEnabled}
+                                        onChange={(e) => setTaskNotifEnabled(e.target.checked)}
+                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    Email assignees before task start
+                                </label>
+                                <div>
+                                    <label className="block text-xs text-gray-500 mb-1">Lead days before start (comma-separated)</label>
+                                    <input
+                                        type="text"
+                                        value={taskNotifLeadDays}
+                                        onChange={(e) => setTaskNotifLeadDays(e.target.value)}
+                                        className="w-full p-2 border rounded-lg text-sm"
+                                        placeholder="14, 7"
+                                    />
+                                </div>
+                            </div>
+                        )}
                     </div>
                     
                     <div className="mb-6">
@@ -293,7 +416,7 @@ function ProjectModal({ onClose, onSave, isLoading = false, project = null }) {
                                     onChange={(e) => setEmailInput(e.target.value)}
                                     onKeyPress={handleKeyPress}
                                     placeholder="Enter email addresses (comma or space separated)"
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 />
                                 <button
                                     type="button"

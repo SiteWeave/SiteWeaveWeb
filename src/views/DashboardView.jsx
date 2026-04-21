@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import ProjectCard from '../components/ProjectCard';
 import ProjectModal from '../components/ProjectModal';
+import CreateFromTemplateModal from '../components/CreateFromTemplateModal';
 import MyDaySidebar from '../components/MyDaySidebar';
 import ConfirmDialog from '../components/ConfirmDialog';
 import DashboardStats from '../components/DashboardStats';
+import ProgressReportModal from '../components/ProgressReportModal';
+import MsProjectImportModal from '../components/MsProjectImportModal';
 import ViewSwitcher from '../components/ViewSwitcher';
 import ProjectBoardView from '../components/ProjectBoardView';
 import ProjectListView from '../components/ProjectListView';
@@ -13,6 +17,7 @@ import PermissionGuard from '../components/PermissionGuard';
 import { useProjectShortcuts } from '../hooks/useKeyboardShortcuts';
 
 function DashboardView() {
+    const navigate = useNavigate();
     const { state, dispatch } = useAppContext();
     const { addToast } = useToast();
     const [showModal, setShowModal] = useState(false);
@@ -22,6 +27,9 @@ function DashboardView() {
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [projectToDelete, setProjectToDelete] = useState(null);
     const [viewType, setViewType] = useState('card'); // 'card', 'list', or 'board'
+    const [showCreateFromTemplateModal, setShowCreateFromTemplateModal] = useState(false);
+    const [showProgressReportModal, setShowProgressReportModal] = useState(false);
+    const [showMsProjectImportModal, setShowMsProjectImportModal] = useState(false);
 
     // Keyboard shortcuts
     useProjectShortcuts({
@@ -375,16 +383,17 @@ function DashboardView() {
     const handleProjectClick = (project) => {
         dispatch({ type: 'SET_PROJECT', payload: project.id });
         dispatch({ type: 'SET_VIEW', payload: 'Projects' });
+        navigate(`/projects/${project.id}/tasks`);
     };
 
     return (
         <>
             <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 h-full">
                 <div className="xl:col-span-3">
-                    <header className="flex items-center justify-between mb-8" data-onboarding="dashboard-welcome">
+                    <header className="flex items-center justify-between mb-8 app-card p-5" data-onboarding="dashboard-welcome">
                          <div>
-                            <h1 className="text-3xl font-bold text-gray-900 mb-1">Project Dashboard</h1>
-                            <p className="text-gray-500 text-sm">Manage your construction projects</p>
+                            <h1 className="app-section-title mb-1">Project Dashboard</h1>
+                            <p className="app-section-subtitle">Manage your construction projects</p>
                         </div>
                         <div className="flex items-center gap-3">
                             <ViewSwitcher currentView={viewType} onViewChange={setViewType} />
@@ -392,9 +401,31 @@ function DashboardView() {
                                 <button 
                                     onClick={() => setShowModal(true)} 
                                     data-onboarding="new-project-btn"
-                                    className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg shadow-sm hover:bg-blue-700 btn-smooth"
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs btn-smooth app-action-primary"
                                 >
                                     + New Project
+                                </button>
+                                <button 
+                                    onClick={() => setShowCreateFromTemplateModal(true)} 
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs btn-smooth app-action-secondary"
+                                >
+                                    From template
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowMsProjectImportModal(true)}
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs btn-smooth bg-slate-700 text-white hover:bg-slate-800"
+                                >
+                                    Import MS Project XML
+                                </button>
+                            </PermissionGuard>
+                            <PermissionGuard permission="can_manage_progress_reports">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowProgressReportModal(true)}
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg shadow-xs btn-smooth bg-emerald-600 text-white hover:bg-emerald-700"
+                                >
+                                    Progress reports
                                 </button>
                             </PermissionGuard>
                         </div>
@@ -437,8 +468,8 @@ function DashboardView() {
                             )}
                         </div>
                     ) : (
-                        <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-                            <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-5">
+                        <div className="flex flex-col items-center justify-center py-20 px-6 text-center app-card">
+                            <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-5">
                                 <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
                                 </svg>
@@ -447,7 +478,7 @@ function DashboardView() {
                             <p className="text-gray-500 mb-6 max-w-md text-sm leading-relaxed">Get started by creating your first construction project. Track progress, manage tasks, and collaborate with your team.</p>
                             <button 
                                 onClick={() => setShowModal(true)}
-                                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm"
+                                className="px-6 py-3 rounded-lg transition-colors font-medium text-sm app-action-primary"
                             >
                                 Create Your First Project
                             </button>
@@ -456,11 +487,24 @@ function DashboardView() {
                 </div>
                 <aside 
                     data-onboarding="my-day-sidebar"
-                    className="bg-white rounded-xl shadow-sm p-5 border border-gray-200 h-fit"
+                    className="app-card p-5 h-fit"
                 >
                     <MyDaySidebar />
                 </aside>
             </div>
+            {showCreateFromTemplateModal && (
+                <CreateFromTemplateModal onClose={() => setShowCreateFromTemplateModal(false)} />
+            )}
+            {showProgressReportModal && (
+                <ProgressReportModal onClose={() => setShowProgressReportModal(false)} />
+            )}
+            {showMsProjectImportModal && (
+                <MsProjectImportModal
+                    context="newProject"
+                    onClose={() => setShowMsProjectImportModal(false)}
+                    onSuccess={() => setShowMsProjectImportModal(false)}
+                />
+            )}
             {showModal && (
                 <ProjectModal 
                     onClose={handleCloseModal} 
