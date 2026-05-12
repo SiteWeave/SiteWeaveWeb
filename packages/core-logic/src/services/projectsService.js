@@ -64,6 +64,10 @@ export async function fetchUserProjects(supabase, contactId) {
  * @returns {Promise<number>} Count of active projects
  */
 export async function fetchActiveProjectsCount(supabase, userId) {
+  // Use RLS policies - they automatically filter based on:
+  // - Admins: all projects
+  // - PMs: projects where project_manager_id = auth.uid()
+  // - Team: projects where created_by_user_id = auth.uid() OR in project_contacts
   const { data, error } = await supabase
     .from('projects')
     .select('id, status')
@@ -75,7 +79,12 @@ export async function fetchActiveProjectsCount(supabase, userId) {
 }
 
 /**
- * Fetch user projects with calculated progress (batched phases — no N+1).
+ * Fetch user projects with calculated progress
+ * Uses RLS policies to automatically filter projects based on user role
+ * Two queries total: projects + batched phases (no N+1 per project).
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - Supabase client
+ * @param {string} userId - User ID (auth.users.id) - not used but kept for API consistency
+ * @returns {Promise<Array>} Array of projects with progress
  */
 export async function fetchUserProjectsWithProgress(supabase, userId) {
   const { data: projects, error } = await supabase

@@ -120,7 +120,10 @@ function ProgressReportModal({ projectId, onClose }) {
         return;
       }
       const saveResult = await saveProgressReportPdf(result.html, {
-        defaultFilename: defaultProgressReportPdfFilename(result.subject),
+        defaultFilename: defaultProgressReportPdfFilename(
+          result.report_name ?? '',
+          result.subject ?? '',
+        ),
       });
       if (!saveResult.ok) {
         addToast(saveResult.error || 'Could not save PDF.', 'error');
@@ -230,7 +233,7 @@ function ProgressReportModal({ projectId, onClose }) {
           ) : (
             <div className="space-y-3">
               {schedules.map((schedule) => {
-                const audienceLabel = { client: 'Client', internal: 'Internal', executive: 'Executive' }[schedule.report_audience_type] || schedule.report_audience_type;
+                const audienceLabel = { client: 'Client', internal: 'Internal', executive: 'Brief' }[schedule.report_audience_type] || schedule.report_audience_type;
                 return (
                   <div key={schedule.id} className="border border-gray-200 rounded-lg p-4 bg-white">
                     <div className="flex items-start justify-between gap-3">

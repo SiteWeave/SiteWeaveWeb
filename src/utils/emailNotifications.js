@@ -42,7 +42,7 @@ export async function sendTaskAssignmentEmail(contactEmail, taskDetails, project
 <body>
     <div class="container">
         <div class="header">
-            <h1>📋 New Task Assignment</h1>
+            <h1>New Task Assignment</h1>
         </div>
         <div class="content">
             <p>Hello,</p>
@@ -75,11 +75,6 @@ export async function sendTaskAssignmentEmail(contactEmail, taskDetails, project
                 <span class="label">Location:</span> <span class="value">${projectDetails.address}</span>
             </div>` : ''}
 
-            <div class="note">
-                <strong>📧 How to Respond:</strong>
-                <p style="margin: 10px 0 0 0;">Please reply to this email with your updates, files, or questions about this task. ${assignerName} will follow up with you directly.</p>
-                <p style="margin: 10px 0 0 0;"><em>Note: You do not need a SiteWeave account to complete this task. Simply respond via email.</em></p>
-            </div>
         </div>
         <div class="footer">
             <p>This email was sent from SiteWeave Project Management</p>
@@ -102,11 +97,6 @@ ${taskDetails.issueTitle ? `Issue: ${taskDetails.issueTitle}\n` : ''}Step: ${tas
 ${taskDetails.priority ? `Priority: ${taskDetails.priority}\n` : ''}${taskDetails.dueDate ? `Due Date: ${new Date(taskDetails.dueDate).toLocaleDateString()}\n` : ''}
 Project: ${projectDetails.name}
 ${projectDetails.address ? `Location: ${projectDetails.address}\n` : ''}
-
-HOW TO RESPOND:
-Please reply to this email with your updates, files, or questions about this task. ${assignerName} will follow up with you directly.
-
-Note: You do not need a SiteWeave account to complete this task. Simply respond via email.
 
 ---
 This email was sent from SiteWeave Project Management
@@ -201,6 +191,51 @@ export async function sendTaskUpdateEmail(contactEmail, updateDetails, projectDe
     } catch (error) {
         console.error('Error in sendTaskUpdateEmail:', error);
         return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Short reminder (“ping”) for an assignee who already has the task.
+ */
+export async function sendTaskPingEmail(contactEmail, taskDetails, projectDetails, senderName) {
+    try {
+        if (!contactEmail || !contactEmail.includes('@')) {
+            return { success: false, error: 'Invalid email address' };
+        }
+
+        const subject = `Reminder: ${taskDetails.title || 'Task'} — ${projectDetails.name}`;
+        const safeTitle = String(taskDetails.title || 'Task').replace(/</g, '&lt;');
+        const safeProject = String(projectDetails.name || 'Project').replace(/</g, '&lt;');
+        const htmlBody = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: system-ui, sans-serif; line-height: 1.5; color: #111;">
+  <p><strong>${senderName}</strong> asked us to send you a quick reminder about a task on <strong>${safeProject}</strong>.</p>
+  <p style="margin: 16px 0; padding: 12px 16px; background: #f3f4f6; border-radius: 8px;"><strong>${safeTitle}</strong></p>
+  ${projectDetails.address ? `<p>Location: ${String(projectDetails.address).replace(/</g, '&lt;')}</p>` : ''}
+  <p style="color: #6b7280; font-size: 14px;">Reply to this email if you have questions.</p>
+</body>
+</html>`.trim();
+
+        const textBody = `${senderName} sent a reminder about "${taskDetails.title || 'Task'}" on ${projectDetails.name}.\n${projectDetails.address ? `Location: ${projectDetails.address}\n` : ''}`;
+
+        const { error } = await supabaseClient.functions.invoke('send-email', {
+            body: {
+                to: contactEmail,
+                subject,
+                html: htmlBody,
+                text: textBody,
+            },
+        });
+
+        if (error) {
+            return { success: false, error: error.message || 'Failed to send email' };
+        }
+        return { success: true };
+    } catch (error) {
+        console.error('Error in sendTaskPingEmail:', error);
+        return { success: false, error: error.message || 'Unknown error' };
     }
 }
 
@@ -530,7 +565,7 @@ export async function sendCalendarInvitationEmail(attendeeEmail, eventDetails, o
                 </p>
                 <div class="footer-compliance">
                     <p>© 2026 SiteWeave. All rights reserved.</p>
-                    <p>1671 moonlight trail cedar park tx 78613</p>
+                    <p>2965 Hero Way Ste 100 Leander, TX 78641</p>
                 </div>
             </div>
         </div>
@@ -556,7 +591,7 @@ Add to Calendar:
 
 ---
 © 2026 SiteWeave. All rights reserved.
-1671 moonlight trail cedar park tx 78613
+2965 Hero Way Ste 100 Leander, TX 78641
 siteweave.org
         `.trim();
 

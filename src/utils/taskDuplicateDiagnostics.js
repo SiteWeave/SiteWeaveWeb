@@ -67,6 +67,7 @@ export function dedupeWeeklyPlanRowsByDisplay(rows) {
   const out = [];
   for (const r of rows) {
     const k = [
+      String(r?.project_id ?? ''),
       String(r?.text ?? '').trim(),
       String(r?.phase_name ?? '').trim(),
       normalizeCalendarDateKey(r?.start_date),
@@ -84,6 +85,7 @@ export function dedupeLastWeekDoneRowsByDisplay(rows) {
   const out = [];
   for (const r of rows) {
     const k = [
+      String(r?.project_id ?? ''),
       String(r?.text ?? '').trim(),
       String(r?.phase_name ?? '').trim(),
       normalizeCalendarDateKey(r?.completed_at),

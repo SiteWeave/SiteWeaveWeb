@@ -1,17 +1,17 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AppContext } from '../context/AppContext';
 import { supabaseClient } from '../context/AppContext';
-import { getRoles, createRole, updateRole, deleteRole } from '../utils/roleManagementService';
+import { getRoles, createRole, updateRole } from '../utils/roleManagementService';
 import { useToast } from '../context/ToastContext';
 import PermissionGuard from './PermissionGuard';
 import LoadingSpinner from './LoadingSpinner';
 import RoleCreationModal from './RoleCreationModal';
+import DeleteRoleModal from './DeleteRoleModal';
 import Icon from './Icon';
 
 // Default permission structure
 const DEFAULT_PERMISSIONS = {
   can_create_tasks: false,
-  can_view_financials: false,
   can_manage_users: false,
   can_delete_projects: false,
   can_assign_tasks: false,
@@ -29,12 +29,13 @@ const PERMISSION_LABELS = {
   can_edit_tasks: 'Edit Tasks',
   can_delete_tasks: 'Delete Tasks',
   can_assign_tasks: 'Assign Tasks',
-  can_view_financials: 'View Financials',
   can_manage_team: 'Manage Organization Directory',
   can_manage_roles: 'Manage Roles',
   can_manage_contacts: 'Manage Contacts',
   can_manage_users: 'Manage Users',
   can_view_activity_history: 'View Activity History',
+  can_manage_progress_reports: 'Project Progress Reports',
+  can_manage_org_progress_reports: 'Organization Progress Reports',
 };
 
 // Helper function to get permission label
@@ -50,6 +51,7 @@ function RoleManagement() {
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [editingRole, setEditingRole] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [rolePendingDelete, setRolePendingDelete] = useState(null);
 
   const organizationId = state.currentOrganization?.id;
 
@@ -122,19 +124,8 @@ function RoleManagement() {
     }
   };
 
-  const handleDeleteRole = async (roleId) => {
-    if (!confirm('Are you sure you want to delete this role? Users with this role will lose their role assignment.')) {
-      return;
-    }
-
-    try {
-      await deleteRole(supabaseClient, roleId);
-      addToast('Role deleted successfully', 'success');
-      loadRoles();
-    } catch (error) {
-      console.error('Error deleting role:', error);
-      addToast('Failed to delete role', 'error');
-    }
+  const handleDeleteRole = (role) => {
+    setRolePendingDelete(role);
   };
 
   const handleCreateRole = () => {
@@ -205,7 +196,7 @@ function RoleManagement() {
                           Edit
                         </button>
                         <button
-                          onClick={() => handleDeleteRole(role.id)}
+                          onClick={() => handleDeleteRole(role)}
                           className="px-3 py-1 text-red-600 hover:bg-red-50 rounded text-sm"
                         >
                           Delete
@@ -241,6 +232,15 @@ function RoleManagement() {
         onSave={handleSaveRole}
         existingRole={editingRole}
         isLoading={isSaving}
+      />
+
+      <DeleteRoleModal
+        show={!!rolePendingDelete}
+        onClose={() => setRolePendingDelete(null)}
+        organizationId={organizationId}
+        roleToDelete={rolePendingDelete}
+        allRoles={roles}
+        onDeleted={loadRoles}
       />
     </div>
   );
