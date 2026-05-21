@@ -6,6 +6,8 @@ export const ROUTE_PATHS = {
   projectGantt: '/projects/:id/gantt',
   projectFieldIssues: '/projects/:id/field-issues',
   projectActivity: '/projects/:id/activity',
+  projectStream: '/projects/:id/stream',
+  projectUpdates: '/projects/:id/updates',
   messages: '/messages',
   calendar: '/calendar',
   team: '/team',
@@ -14,6 +16,8 @@ export const ROUTE_PATHS = {
   settings: '/settings',
   notifications: '/settings/notifications',
   login: '/login',
+  signup: '/signup',
+  projectInvite: '/project-invite/:token',
   invite: '/invite/:token',
   guestTaskShare: '/guest/tasks/:token',
 }
@@ -22,7 +26,7 @@ export const PRIMARY_NAV_ITEMS = [
   { label: 'Dashboard', to: ROUTE_PATHS.home },
   { label: 'Projects', to: ROUTE_PATHS.projects },
   { label: 'Calendar', to: ROUTE_PATHS.calendar },
-  { label: 'Team', to: ROUTE_PATHS.team },
+  { label: 'Directory', to: ROUTE_PATHS.teamDirectory },
   { label: 'Organization', to: ROUTE_PATHS.organization },
   { label: 'Settings', to: ROUTE_PATHS.settings },
 ]

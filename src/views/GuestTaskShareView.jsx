@@ -364,76 +364,78 @@ export default function GuestTaskShareView() {
                       </div>
                     ) : null}
 
-                    <div className="flex flex-col gap-2 px-3 py-3 sm:px-4 sm:flex-row sm:items-center sm:gap-3">
-                      <div className="flex items-start gap-2 min-w-0 flex-1">
-                        {!interactive ? (
-                          <span className="shrink-0 text-[10px] uppercase tracking-wide text-gray-500 font-semibold bg-gray-100 px-1.5 py-0.5 rounded mt-0.5">
-                            View only
-                          </span>
-                        ) : null}
-                        {task.completed ? (
-                          <span className="shrink-0 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800 uppercase mt-0.5">
-                            Completed
-                          </span>
-                        ) : null}
-                        <span
-                          className={`min-w-0 flex-1 text-sm sm:text-base leading-snug sm:line-clamp-2 ${task.completed ? 'text-gray-500 line-through' : 'font-medium text-gray-900'}`}
-                        >
-                          {task.text || 'Task'}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-3 sm:justify-end sm:flex-nowrap sm:shrink-0">
-                        <TaskDatesInline startDate={task.start_date} dueDate={task.due_date} />
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {interactive && !task.completed && !task.start_date ? (
-                            <span className="text-xs text-amber-800 font-medium whitespace-nowrap hidden sm:inline">
-                              No on-site date
+                    <div className="px-3 py-3 sm:px-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+                        <div className="flex items-start gap-2 min-w-0 sm:flex-1">
+                          {!interactive ? (
+                            <span className="shrink-0 text-[10px] uppercase tracking-wide text-gray-500 font-semibold bg-gray-100 px-1.5 py-0.5 rounded mt-0.5">
+                              View only
                             </span>
                           ) : null}
-                          {interactive && !task.completed ? (
-                            <>
-                              <input
-                                ref={(el) => {
-                                  fileInputs.current[task.id] = el
-                                }}
-                                type="file"
-                                accept="image/jpeg,image/png,image/webp"
-                                className="hidden"
-                                onChange={(e) => handleFileChange(task.id, e)}
-                                aria-label={`Add photo for ${task.text || 'task'}`}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handlePickFile(task.id)}
-                                disabled={uploadingTaskId === task.id}
-                                className="inline-flex items-center rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
-                              >
-                                {uploadingTaskId === task.id ? '…' : 'Photo'}
-                              </button>
-                            </>
+                          {task.completed ? (
+                            <span className="shrink-0 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800 uppercase mt-0.5">
+                              Completed
+                            </span>
                           ) : null}
+                          <span
+                            className={`min-w-0 sm:flex-1 text-sm sm:text-base leading-snug sm:line-clamp-2 ${task.completed ? 'text-gray-500 line-through' : 'font-medium text-gray-900'}`}
+                          >
+                            {task.text || 'Task'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-start justify-end gap-3 sm:flex-nowrap sm:shrink-0">
+                          <TaskDatesInline startDate={task.start_date} dueDate={task.due_date} />
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {interactive && !task.completed && !task.start_date ? (
+                              <span className="text-xs text-amber-800 font-medium whitespace-nowrap hidden sm:inline">
+                                No on-site date
+                              </span>
+                            ) : null}
+                            {interactive && !task.completed ? (
+                              <>
+                                <input
+                                  ref={(el) => {
+                                    fileInputs.current[task.id] = el
+                                  }}
+                                  type="file"
+                                  accept="image/jpeg,image/png,image/webp"
+                                  className="hidden"
+                                  onChange={(e) => handleFileChange(task.id, e)}
+                                  aria-label={`Add photo for ${task.text || 'task'}`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handlePickFile(task.id)}
+                                  disabled={uploadingTaskId === task.id}
+                                  className="inline-flex items-center rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
+                                >
+                                  {uploadingTaskId === task.id ? '…' : 'Photo'}
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {(deps.dependsOn.length > 0 || deps.unlocks.length > 0) ? (
-                      <div className="px-3 pb-2 sm:px-4 text-xs text-gray-600 space-y-0.5 border-t border-gray-50 pt-2">
-                        {deps.dependsOn.length > 0 ? (
-                          <p>
-                            <span className="font-medium text-gray-700">Depends on: </span>
-                            {[...new Set(deps.dependsOn)].join(' · ')}
-                          </p>
-                        ) : null}
-                        {deps.unlocks.length > 0 ? (
-                          <p>
-                            <span className="font-medium text-gray-700">Following tasks: </span>
-                            {[...new Set(deps.unlocks)].join(' · ')}
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
+                      {(deps.dependsOn.length > 0 || deps.unlocks.length > 0) ? (
+                        <div className="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-600 space-y-0.5">
+                          {deps.dependsOn.length > 0 ? (
+                            <p>
+                              <span className="font-medium text-gray-700">Depends on: </span>
+                              {[...new Set(deps.dependsOn)].join(' · ')}
+                            </p>
+                          ) : null}
+                          {deps.unlocks.length > 0 ? (
+                            <p>
+                              <span className="font-medium text-gray-700">Following tasks: </span>
+                              {[...new Set(deps.unlocks)].join(' · ')}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
 
                     {task.photos?.length ? (
                       <div className="px-3 pb-3 sm:px-4 grid grid-cols-3 sm:grid-cols-4 gap-1.5">

@@ -19,13 +19,16 @@ export default function LoginView() {
 
   if (loading || session) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-white">
         <LoadingSpinner size="lg" text="Signing you in..." />
       </div>
     )
   }
 
   return (
-    <LoginForm onPasswordSignInSuccess={() => navigate('/', { replace: true })} />
+    <LoginForm
+      mode="signIn"
+      onAuthSuccess={() => navigate('/', { replace: true })}
+    />
   )
 }

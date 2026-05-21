@@ -1,6 +1,21 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
+import { ROUTE_PATHS } from '../config/routes'
+
+function notificationLink(item) {
+  const meta = item?.metadata || {}
+  if (typeof meta.screen === 'string' && meta.screen.startsWith('/projects/')) {
+    return meta.screen
+  }
+  if (item?.source_type === 'stream_post' && item.project_id) {
+    return ROUTE_PATHS.projectStream.replace(':id', item.project_id)
+  }
+  if (item.project_id) {
+    return ROUTE_PATHS.projectTasks.replace(':id', item.project_id)
+  }
+  return ROUTE_PATHS.home
+}
 
 export default function NotificationCenterBell() {
   const [open, setOpen] = React.useState(false)
@@ -10,7 +25,7 @@ export default function NotificationCenterBell() {
   const loadNotifications = React.useCallback(async () => {
     const { data, error } = await supabase
       .from('user_notifications')
-      .select('id,title,body,created_at,read_at,project_id,metadata')
+      .select('id,title,body,created_at,read_at,project_id,metadata,source_type')
       .order('created_at', { ascending: false })
       .limit(20)
 
@@ -26,6 +41,17 @@ export default function NotificationCenterBell() {
 
   React.useEffect(() => {
     loadNotifications()
+    const channel = supabase
+      .channel('notification_center_bell')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'user_notifications' },
+        () => loadNotifications(),
+      )
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [loadNotifications])
 
   const handleNotificationClick = async (id) => {
@@ -67,7 +93,7 @@ export default function NotificationCenterBell() {
             {items.map((item) => (
               <Link
                 key={item.id}
-                to={item.project_id ? `/projects/${item.project_id}/tasks` : '/'}
+                to={notificationLink(item)}
                 className={`block px-3 py-2.5 border-b border-slate-100 last:border-b-0 hover:bg-slate-50 ${item.read_at ? '' : 'bg-blue-50/50'}`}
                 onClick={() => handleNotificationClick(item.id)}
               >
