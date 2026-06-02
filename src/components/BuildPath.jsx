@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import PermissionGuard from './PermissionGuard';
@@ -19,6 +20,7 @@ function debounce(func, wait) {
 }
 
 function BuildPath({ project }) {
+    const { t } = useTranslation();
     const { dispatch, state } = useAppContext();
     const { addToast } = useToast();
     const [phases, setPhases] = useState([]);
@@ -390,16 +392,16 @@ function BuildPath({ project }) {
     return (
         <div className="h-full flex flex-col">
             <div className="flex justify-between items-center mb-4">
-                <h3 className="font-bold text-lg">Progress Status</h3>
+                <h3 className="font-bold text-lg">{t('build_path.progress_status')}</h3>
                 {isAuthorized() && (
                     <div className="flex gap-2">
-                        <button
+                        <button type="button"
                             onClick={() => setShowPhaseModal(true)}
                             className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
                         >
                             + Add Phase
                         </button>
-                        <button
+                        <button type="button"
                             onClick={() => setIsEditing(!isEditing)}
                             className="px-3 py-1 text-sm bg-gray-600 text-white rounded hover:bg-gray-700"
                         >
@@ -494,7 +496,7 @@ function BuildPath({ project }) {
                                 )}
                             </div>
                             {isEditing && isAuthorized() && (
-                                <button
+                                <button type="button"
                                     onClick={() => handleDeletePhase(phase.id)}
                                     className="px-2 py-1 text-xs bg-red-100 text-red-600 rounded hover:bg-red-200"
                                 >

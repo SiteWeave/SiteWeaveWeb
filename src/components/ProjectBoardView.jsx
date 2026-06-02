@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppContext, supabaseClient } from '../context/AppContext';
 import {
     formatDateShort,
     getStatusColor,
     normalizeStatusDisplay,
+    getLocalizedProjectStatus,
     calculateProjectsProgressMap,
 } from '../utils/projectHelpers';
 import PermissionGuard from './PermissionGuard';
 
 function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
+    const { t } = useTranslation();
     const { dispatch } = useAppContext();
     const [draggedProject, setDraggedProject] = useState(null);
     const [dragOverColumn, setDragOverColumn] = useState(null);
@@ -163,7 +166,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
     if (activeProjects.length === 0) {
         return (
             <div className="app-card p-12 text-center">
-                <p className="text-slate-500">No active projects found.</p>
+                <p className="text-slate-500">{t('dashboard.no_active_projects')}</p>
             </div>
         );
     }
@@ -173,7 +176,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
             <div className="flex gap-4 min-w-max">
                 {statuses.map((status) => {
                     const statusProjects = getProjectsByStatus(status);
-                    const displayStatus = normalizeStatusDisplay(status) || status || 'Unknown Status';
+                    const displayStatus = getLocalizedProjectStatus(normalizeStatusDisplay(status) || status, t);
                     const statusColorClasses = getStatusColor(status);
                     const isBeingDraggedOver = dragOverColumn === status;
                     const isDraggingFromThisColumn = draggedProject && normalizeStatus(draggedProject.status) === status;
@@ -258,7 +261,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
                                             </div>
                                             <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-gray-100">
                                                 <PermissionGuard permission="can_edit_projects">
-                                                    <button
+                                                    <button type="button"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
                                                             onEdit(project);
@@ -272,7 +275,7 @@ function ProjectBoardView({ projects, onEdit, onDelete, onProjectClick }) {
                                                     </button>
                                                 </PermissionGuard>
                                                 <PermissionGuard permission="can_delete_projects">
-                                                    <button
+                                                    <button type="button"
                                                         onClick={(e) => {
                                                             e.stopPropagation();
                                                             onDelete(project);

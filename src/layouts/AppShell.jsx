@@ -55,7 +55,7 @@ export default function AppShell({ session }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="min-h-screen bg-slate-100" data-testid="app-shell">
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] min-h-screen">
         <aside className="hidden lg:flex flex-col h-screen sticky top-0 overflow-hidden border-r border-slate-200 bg-white/95 backdrop-blur-xs">
           <div className="h-16 px-6 border-b border-slate-200 flex items-center justify-between">
@@ -96,6 +96,7 @@ export default function AppShell({ session }) {
               <NavLink
                 key={item.to}
                 to={item.to}
+                data-testid={`nav-${item.label.toLowerCase()}`}
                 className={({ isActive }) => `block px-3 py-2.5 rounded-lg text-sm font-medium ${isActive ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
               >
                 {item.label}
@@ -125,8 +126,8 @@ export default function AppShell({ session }) {
           </div>
         </aside>
 
-        <div className="flex flex-col min-h-screen">
-          <header className="lg:hidden bg-white/95 border-b border-slate-200 backdrop-blur-xs px-4 py-2 space-y-2">
+        <div className="flex flex-col min-h-0 h-screen max-h-screen overflow-hidden">
+          <header className="lg:hidden shrink-0 bg-white/95 border-b border-slate-200 backdrop-blur-xs px-4 py-2 space-y-2">
             <nav className="flex items-center gap-1 flex-wrap">
               {PRIMARY_NAV_ITEMS.map((item) => (
                 <NavLink
@@ -158,8 +159,8 @@ export default function AppShell({ session }) {
             </div>
           </header>
 
-          <main className="flex-1 p-4 sm:p-6">
-            <div className="mx-auto max-w-[1600px]">
+          <main className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain p-4 sm:p-6 pb-24">
+            <div className="mx-auto max-w-[1600px] min-h-min">
               <Outlet />
             </div>
           </main>
