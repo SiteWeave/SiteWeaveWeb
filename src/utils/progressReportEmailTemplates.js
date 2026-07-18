@@ -1,6 +1,3 @@
-// AUTO-GENERATED from src/utils/progressReportEmailTemplates.js — run: node scripts/sync-progress-report-templates.mjs
-// deno-lint-ignore-file no-explicit-any
-
 /**
  * Progress Report Email Templates
  * Generates HTML email templates for different audience types.
@@ -11,6 +8,8 @@
  * Edge functions use a generated copy: run `npm run sync:progress-report-templates`
  * after changing this file so `send-progress-report` / `export-progress-report-pdf` stay in sync.
  */
+
+import i18n from '../i18n/config';
 
 /** Public URL for SiteWeave footer mark (matches other SiteWeave transactional email). */
 const SITEWEAVE_LOGO_URL = 'https://app.siteweave.org/logo.svg';
@@ -30,7 +29,7 @@ function escapeHtml(text) {
 function formatDate(dateString) {
   if (!dateString) return '';
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString(i18n.language || 'en', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatReportPeriod(startDate, endDate) {
@@ -571,7 +570,7 @@ function standardReportSectionsHtml(reportData, schedule, branding, options = {}
   return middle;
 }
 
-function generateStandardReportEmail(reportData, schedule, branding) {
+export function generateStandardReportEmail(reportData, schedule, branding) {
   const subject = schedule.custom_subject || `Progress Update: ${reportData.project_name || 'Your Project'}`;
   const period  = formatReportPeriod(reportData.start_date, reportData.end_date);
   const primary   = branding.primary_color   || '#3B82F6';
@@ -638,11 +637,11 @@ function generateStandardReportEmail(reportData, schedule, branding) {
 }
 
 // Backward-compat alias so any external callers still work
-
+export const generateClientReportEmail = generateStandardReportEmail;
 
 // ─── EXECUTIVE template ───────────────────────────────────────────────────────
 
-function generateExecutiveReportEmail(reportData, schedule, branding) {
+export function generateExecutiveReportEmail(reportData, schedule, branding) {
   const subject = schedule.custom_subject || `Brief: ${reportData.organization_name || 'Organization'} Status`;
   const period  = formatReportPeriod(reportData.start_date, reportData.end_date);
   const primary   = branding.primary_color   || '#3B82F6';
@@ -892,11 +891,4 @@ function generateTextVersion(reportData, schedule, period) {
 
   appendStandardTextBody(reportData, true);
   return text;
-}
-
-export function buildProgressReportEmail(reportData, filteredData, schedule, branding) {
-  const audience = schedule.report_audience_type || 'standard';
-  if (audience === 'executive') return generateExecutiveReportEmail(filteredData, schedule, branding);
-  // standard / client / internal all use the unified standard template
-  return generateStandardReportEmail(filteredData, schedule, branding);
 }
