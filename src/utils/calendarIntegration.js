@@ -68,21 +68,28 @@ export const handleGoogleCalendarCallback = async (code) => {
 
 export const startGoogleCalendarOAuth = async () => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
+    const isElectron = !!window.electronAPI?.isElectron;
+    // Electron uses a public Desktop OAuth client + PKCE (no client secret in the renderer).
+    // Web may still use a confidential client secret for token exchange.
+    const clientSecret = isElectron ? undefined : import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
     
-    if (!clientId || !clientSecret) {
-        throw new Error('Google OAuth credentials not configured');
+    if (!clientId || (!isElectron && !clientSecret)) {
+        throw new Error(
+            isElectron
+                ? 'Google OAuth client ID not configured'
+                : 'Google OAuth credentials not configured'
+        );
     }
 
     try {
         const result = await electronOAuth.startOAuthFlow('google', {
             clientId: clientId,
-            clientSecret: clientSecret
+            ...(clientSecret ? { clientSecret } : {}),
         });
 
         const tokenData = await electronOAuth.exchangeCodeForToken('google', result.code, {
             clientId: clientId,
-            clientSecret: clientSecret
+            ...(clientSecret ? { clientSecret } : {}),
         });
         
         // Store token for future sync operations
@@ -174,23 +181,28 @@ export const startOutlookCalendarOAuth = async () => {
 // Google Calendar API Integration
 const exchangeGoogleToken = async (code) => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
-    const redirectUri = window.electronAPI?.isElectron 
+    const isElectron = !!window.electronAPI?.isElectron;
+    const clientSecret = isElectron ? undefined : import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
+    const redirectUri = isElectron 
         ? 'http://127.0.0.1:5000/google-callback'
         : window.location.origin + '/calendar';
+
+    const params = {
+        client_id: clientId,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+    };
+    if (clientSecret) {
+        params.client_secret = clientSecret;
+    }
 
     const response = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: new URLSearchParams({
-            client_id: clientId,
-            client_secret: clientSecret,
-            code: code,
-            grant_type: 'authorization_code',
-            redirect_uri: redirectUri,
-        }),
+        body: new URLSearchParams(params),
     });
 
     if (!response.ok) {

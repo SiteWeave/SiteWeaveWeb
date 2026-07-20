@@ -107,9 +107,14 @@ function DashboardView() {
         state.user?.id ? getChecklistDismissed(state.user.id) : false,
     );
 
+    useEffect(() => {
+        if (!state.user?.id) return;
+        setChecklistDismissedState(getChecklistDismissed(state.user.id));
+    }, [state.user?.id]);
+
     const isGuestOnly = state.isProjectCollaborator && !state.currentOrganization;
 
-    const activationCompleted = useOfficeActivationState(
+    const { completed: activationCompleted, ready: activationReady } = useOfficeActivationState(
         supabaseClient,
         state.currentOrganization?.id,
         state.projects,
@@ -119,6 +124,7 @@ function DashboardView() {
     const primaryColor = useBrandingPrimaryColor(loadBrandingColor, state.currentOrganization?.id);
 
     const showActivationChecklist =
+        activationReady &&
         !isGuestOnly &&
         state.currentOrganization &&
         !checklistDismissed &&

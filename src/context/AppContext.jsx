@@ -676,6 +676,7 @@ export const AppProvider = ({ children }) => {
         const startTime = performance.now();
 
         // Start projects fetch immediately so the UI can render while profile/org work continues.
+        let projectsAfterInvite = null;
         const projectsFetchPromise = (async () => {
           try {
             const { data: projects, error: projectsError } = await supabaseClient
@@ -934,7 +935,22 @@ export const AppProvider = ({ children }) => {
                 role: 'Team',
               }, { onConflict: 'id' });
             }
-            await workspaceClient.runInviteBootstrap(supabaseClient);
+            const inviteResult = await workspaceClient.runInviteBootstrap(supabaseClient);
+            // Redeem can finish after the parallel projects fetch; refresh so new collabs appear.
+            if (inviteResult?.redeemedProjectIds?.length || inviteResult?.pendingRedeem?.success) {
+              try {
+                const { data: refreshedProjects, error: refreshErr } = await supabaseClient
+                  .from('projects')
+                  .select(PROJECT_LIST_COLUMNS)
+                  .is('trashed_at', null)
+                  .order('updated_at', { ascending: false });
+                if (!refreshErr && refreshedProjects) {
+                  projectsAfterInvite = refreshedProjects;
+                }
+              } catch (refreshErr) {
+                console.warn('Projects refresh after invite bootstrap:', refreshErr);
+              }
+            }
           } catch (bootstrapErr) {
             console.warn('Account bootstrap (invites/provision):', bootstrapErr);
           }
@@ -1121,7 +1137,7 @@ export const AppProvider = ({ children }) => {
           }
 
           // === PHASE 1: Critical Data (Projects) - unblock UI as soon as list is ready ===
-          let finalProjects = await projectsFetchPromise;
+          let finalProjects = projectsAfterInvite ?? (await projectsFetchPromise);
           dispatch({ type: 'SET_DATA', payload: {
             projects: finalProjects,
             activeView: currentActiveViewRef.current || state.activeView,
