@@ -17,7 +17,9 @@ import ProjectBoardView from '../components/ProjectBoardView';
 import ProjectListView from '../components/ProjectListView';
 import PermissionGuard from '../components/PermissionGuard';
 import ProjectLimitReachedModal from '../components/ProjectLimitReachedModal';
+import UpgradeRequiredModal from '../components/UpgradeRequiredModal';
 import { useProjectShortcuts } from '../hooks/useKeyboardShortcuts';
+import { useWorkspaceTier } from '../hooks/useWorkspaceTier';
 import {
   canCreateProject,
   isPersonalWorkspace,
@@ -103,9 +105,11 @@ function DashboardView() {
     const [showProgressReportModal, setShowProgressReportModal] = useState(false);
     const [showMsProjectImportModal, setShowMsProjectImportModal] = useState(false);
     const [showProjectLimitModal, setShowProjectLimitModal] = useState(false);
+    const [showCommsUpgrade, setShowCommsUpgrade] = useState(false);
     const [checklistDismissed, setChecklistDismissedState] = useState(() =>
         state.user?.id ? getChecklistDismissed(state.user.id) : false,
     );
+    const { canProgressReports } = useWorkspaceTier();
 
     useEffect(() => {
         if (!state.user?.id) return;
@@ -123,16 +127,36 @@ function DashboardView() {
 
     const primaryColor = useBrandingPrimaryColor(loadBrandingColor, state.currentOrganization?.id);
 
+    const isOrgAdminForChecklist =
+        state.userRole?.name === 'Org Admin' ||
+        state.userRole?.permissions?.can_manage_roles === true ||
+        (state.currentOrganization?.created_by_user_id != null &&
+            state.currentOrganization.created_by_user_id === state.user?.id);
+
     const showActivationChecklist =
         activationReady &&
         !isGuestOnly &&
+        isOrgAdminForChecklist &&
         state.currentOrganization &&
         !checklistDismissed &&
+        !isActivationComplete(activationCompleted);
+
+    const showActivationChecklistRestore =
+        activationReady &&
+        !isGuestOnly &&
+        isOrgAdminForChecklist &&
+        state.currentOrganization &&
+        checklistDismissed &&
         !isActivationComplete(activationCompleted);
 
     const handleChecklistDismiss = () => {
         if (state.user?.id) setChecklistDismissed(state.user.id, true);
         setChecklistDismissedState(true);
+    };
+
+    const handleChecklistShow = () => {
+        if (state.user?.id) setChecklistDismissed(state.user.id, false);
+        setChecklistDismissedState(false);
     };
 
     const guardCanCreateProject = async () => {
@@ -186,6 +210,10 @@ function DashboardView() {
             return;
         }
         if (itemId === 'report') {
+            if (!canProgressReports) {
+                setShowCommsUpgrade(true);
+                return;
+            }
             setShowProgressReportModal(true);
         }
     };
@@ -600,13 +628,6 @@ function DashboardView() {
                                 <ViewSwitcher compact currentView={viewType} onViewChange={setViewType} />
                                 <PermissionGuard permission="can_create_projects">
                                     <button type="button"
-                                        onClick={() => tryOpenCreateProject()}
-                                        data-onboarding="new-project-btn"
-                                        className="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold shadow-xs app-action-primary"
-                                    >
-                                        + {t('dashboard.new_project')}
-                                    </button>
-                                    <button type="button"
                                         onClick={() => tryOpenTemplateModal()}
                                         title={t('dashboard.create_from_template_title')}
                                         data-onboarding="template-btn"
@@ -626,12 +647,32 @@ function DashboardView() {
                                 <PermissionGuard permission="can_manage_org_progress_reports">
                                     <button
                                         type="button"
-                                        onClick={() => setShowProgressReportModal(true)}
+                                        onClick={() => {
+                                            if (!canProgressReports) {
+                                                setShowCommsUpgrade(true);
+                                                return;
+                                            }
+                                            setShowProgressReportModal(true);
+                                        }}
                                         title={t('dashboard.org_reports_title')}
                                         data-onboarding="progress-reports"
-                                        className="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold shadow-xs btn-smooth bg-emerald-600 text-white hover:bg-emerald-700"
+                                        className="relative whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold shadow-xs btn-smooth bg-emerald-600 text-white hover:bg-emerald-700"
                                     >
+                                        {!canProgressReports && (
+                                            <svg className="w-3 h-3 absolute -top-1 -right-1 text-amber-200" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                                                <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                                            </svg>
+                                        )}
                                         {t('dashboard.org_reports')}
+                                    </button>
+                                </PermissionGuard>
+                                <PermissionGuard permission="can_create_projects">
+                                    <button type="button"
+                                        onClick={() => tryOpenCreateProject()}
+                                        data-onboarding="new-project-btn"
+                                        className="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold shadow-xs app-action-primary"
+                                    >
+                                        + {t('dashboard.new_project')}
                                     </button>
                                 </PermissionGuard>
                             </div>
@@ -645,7 +686,46 @@ function DashboardView() {
                                 primaryColor={primaryColor}
                                 onDismiss={handleChecklistDismiss}
                                 onItemAction={handleChecklistAction}
+                                title={t('activation.title')}
+                                dismissLabel={t('activation.dismiss')}
+                                formatProgress={(done, total) =>
+                                    t('activation.progress', { done, total })
+                                }
+                                itemCopy={{
+                                    workspace: {
+                                        title: t('activation.workspace_title'),
+                                        hint: t('activation.workspace_hint'),
+                                    },
+                                    project: {
+                                        title: t('activation.project_title'),
+                                        hint: t('activation.project_hint'),
+                                    },
+                                    schedule: {
+                                        title: t('activation.schedule_title'),
+                                        hint: t('activation.schedule_hint'),
+                                    },
+                                    team: {
+                                        title: t('activation.team_title'),
+                                        hint: t('activation.team_hint'),
+                                    },
+                                    report: {
+                                        title: t('activation.report_title'),
+                                        hint: t('activation.report_hint'),
+                                    },
+                                }}
                             />
+                        </div>
+                    ) : showActivationChecklistRestore ? (
+                        <div className="mb-6">
+                            <button
+                                type="button"
+                                onClick={handleChecklistShow}
+                                className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 shadow-xs transition-[transform,background-color] duration-150 hover:bg-gray-50 active:scale-[0.98]"
+                                style={{ color: primaryColor, borderColor: `${primaryColor}33` }}
+                                data-testid="activation-checklist-show"
+                            >
+                                {t('activation.show')}
+                            </button>
                         </div>
                     ) : null}
                     
@@ -773,6 +853,11 @@ function DashboardView() {
             <ProjectLimitReachedModal
                 isOpen={showProjectLimitModal}
                 onClose={() => setShowProjectLimitModal(false)}
+            />
+            <UpgradeRequiredModal
+                isOpen={showCommsUpgrade}
+                onClose={() => setShowCommsUpgrade(false)}
+                feature="progress_reports"
             />
             <ConfirmDialog
                 isOpen={Boolean(projectToTrash)}

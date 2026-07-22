@@ -236,14 +236,14 @@ class ElectronOAuth {
 
     const codeVerifier = this.pkceCodeVerifier || this.msCodeVerifier;
 
-    // Electron desktop clients are public: PKCE only, never ship client_secret in the renderer.
-    const isElectronPublicClient = this.isElectron && (provider === 'google' || provider === 'microsoft');
-    if (!isElectronPublicClient && config.clientSecret) {
+    // Electron uses PKCE. If a confidential Web client ID is configured, also send client_secret
+    // (Google returns "client_secret is missing" for Web clients without it).
+    if (config.clientSecret) {
       body.set('client_secret', config.clientSecret);
-      console.log('Including client_secret (web/confidential flow)');
+      console.log('Including client_secret (confidential client)');
     }
 
-    if (isElectronPublicClient) {
+    if (this.isElectron && (provider === 'google' || provider === 'microsoft')) {
       if (!codeVerifier) {
         throw new Error(`PKCE code_verifier is required for ${provider} OAuth in Electron but was not found.`);
       }
@@ -265,6 +265,7 @@ class ElectronOAuth {
           clientId: config.clientId,
           redirectUri,
           codeVerifier,
+          ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}),
         });
         this.pkceCodeVerifier = null;
         this.msCodeVerifier = null;

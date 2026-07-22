@@ -1047,7 +1047,6 @@ export const AppProvider = ({ children }) => {
             dispatch({ type: 'SET_USER_ROLE', payload: profileWithOrg.roles });
             // Clear any organization errors if org is found
             dispatch({ type: 'SET_ORGANIZATION_ERROR', payload: null });
-            dispatch({ type: 'SET_COLLABORATOR_STATUS', payload: { isCollaborator: false, projects: [] } });
           } else {
             // No organization found - check for project collaborations
             dispatch({ type: 'SET_ORGANIZATION_LOADING', payload: true });
@@ -1057,7 +1056,9 @@ export const AppProvider = ({ children }) => {
               
               if (collaborations && collaborations.length > 0) {
                 // User is a collaborator - allow access
-                const collaborationProjects = collaborations.map(c => c.projects).filter(Boolean);
+                const collaborationProjects = collaborations
+                  .map((c) => (c.projects ? { ...c.projects, access_level: c.access_level } : null))
+                  .filter(Boolean);
                 dispatch({ 
                   type: 'SET_COLLABORATOR_STATUS', 
                   payload: { 
@@ -1097,13 +1098,37 @@ export const AppProvider = ({ children }) => {
                 }
                 dispatch({ type: 'SET_COLLABORATOR_STATUS', payload: { isCollaborator: false, projects: [] } });
               }
-            } catch (error) {
-              console.error('Error checking for project collaborations:', error);
-              // On error, still set organization error
-              dispatch({ type: 'SET_ORGANIZATION_ERROR', payload: 'No organization found. Please contact your administrator.' });
+            } catch (collabErr) {
+              console.error('Error checking collaborations:', collabErr);
+              dispatch({ type: 'SET_ORGANIZATION_ERROR', payload: 'guest_waiting' });
               dispatch({ type: 'SET_COLLABORATOR_STATUS', payload: { isCollaborator: false, projects: [] } });
-            } finally {
-              dispatch({ type: 'SET_ORGANIZATION_LOADING', payload: false });
+            }
+            dispatch({ type: 'SET_ORGANIZATION_LOADING', payload: false });
+          }
+
+          // Always load collaboration projects (cross-org guest access) when user has a home org
+          if (organization && state.user?.id) {
+            try {
+              const { getUserCollaborationProjects } = await import('../utils/projectCollaborationService');
+              const collaborations = await getUserCollaborationProjects(supabaseClient, state.user.id);
+              const collaborationProjects = (collaborations || [])
+                .map((c) => (c.projects ? { ...c.projects, access_level: c.access_level } : null))
+                .filter(Boolean);
+              if (collaborationProjects.length > 0) {
+                dispatch({
+                  type: 'SET_COLLABORATOR_STATUS',
+                  payload: {
+                    // Guest-only shell uses isCollaborator && !org; keep false when user has a home org
+                    isCollaborator: false,
+                    projects: collaborationProjects,
+                  },
+                });
+              } else {
+                dispatch({ type: 'SET_COLLABORATOR_STATUS', payload: { isCollaborator: false, projects: [] } });
+              }
+            } catch (crossCollabErr) {
+              console.warn('Could not load cross-org collaborations:', crossCollabErr);
+              dispatch({ type: 'SET_COLLABORATOR_STATUS', payload: { isCollaborator: false, projects: [] } });
             }
           }
           

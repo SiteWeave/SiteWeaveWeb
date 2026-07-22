@@ -69,15 +69,20 @@ export const handleGoogleCalendarCallback = async (code) => {
 export const startGoogleCalendarOAuth = async () => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     const isElectron = !!window.electronAPI?.isElectron;
-    // Electron uses a public Desktop OAuth client + PKCE (no client secret in the renderer).
-    // Web may still use a confidential client secret for token exchange.
-    const clientSecret = isElectron ? undefined : import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
+    // Prefer PKCE for Electron Desktop clients. Also pass secret when present so
+    // confidential Web client IDs still work (Google requires client_secret for those).
+    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
     
     if (!clientId || (!isElectron && !clientSecret)) {
         throw new Error(
             isElectron
                 ? 'Google OAuth client ID not configured'
-                : 'Google OAuth credentials not configured'
+                : 'Google OAuth credentials not configured (set VITE_GOOGLE_CLIENT_ID and VITE_GOOGLE_CLIENT_SECRET)'
+        );
+    }
+    if (isElectron && !clientSecret) {
+        console.warn(
+            'VITE_GOOGLE_CLIENT_SECRET is unset. If Google returns "client_secret is missing", use a Desktop OAuth client or set the Web client secret.',
         );
     }
 
@@ -182,7 +187,7 @@ export const startOutlookCalendarOAuth = async () => {
 const exchangeGoogleToken = async (code) => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     const isElectron = !!window.electronAPI?.isElectron;
-    const clientSecret = isElectron ? undefined : import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
+    const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
     const redirectUri = isElectron 
         ? 'http://127.0.0.1:5000/google-callback'
         : window.location.origin + '/calendar';
@@ -206,7 +211,12 @@ const exchangeGoogleToken = async (code) => {
     });
 
     if (!response.ok) {
-        throw new Error('Failed to exchange Google token');
+        const detail = await response.text().catch(() => '');
+        throw new Error(
+            detail
+                ? `Failed to exchange Google token: ${detail}`
+                : 'Failed to exchange Google token',
+        );
     }
 
     return await response.json();
